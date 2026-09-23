@@ -19,9 +19,12 @@ def md(df: pd.DataFrame, floatfmt: str = ".3g") -> str:
             return "–" if np.isnan(v) else format(v, floatfmt)
         return str(v)
 
-    cols = list(df.columns)
+    def esc(v: str) -> str:
+        return v.replace("|", "\\|")
+
+    cols = [esc(str(c)) for c in df.columns]
     lines = ["| " + " | ".join(cols) + " |", "|" + "|".join("---" for _ in cols) + "|"]
-    lines += ["| " + " | ".join(fmt(v) for v in row) + " |" for row in df.itertuples(index=False)]
+    lines += ["| " + " | ".join(esc(fmt(v)) for v in row) + " |" for row in df.itertuples(index=False)]
     return "\n".join(lines)
 
 
@@ -246,9 +249,9 @@ def instruct_table(root: Path) -> str:
             lm = json.loads((root / m / "lm.json").read_text())
             rows.append(
                 {
-                    "model": title + (" (Instruct)" if m.endswith("instruct") else " (Base)"),
+                    "model": title.removesuffix("-Base") + (" Instruct" if m.endswith("instruct") else " Base"),
                     "WikiText-2 PPL": lm["wikitext2"]["ppl"],
-                    "max |h|": res.top1.max(),
+                    "max |h| (final norm 除く)": res.top1.max(),
                     "sink dim": int(res.sink_dim.mode().iloc[0]),
                     "M2 median": res.sink_score.median(),
                     "M3 p50 median": res.peak_p50.median(),
@@ -259,6 +262,21 @@ def instruct_table(root: Path) -> str:
                 }
             )
     return md(pd.DataFrame(rows)) if rows else "(not run)"
+
+
+def input_dependence_table(root: Path) -> str:
+    p = root / "input_dependence.parquet"
+    if not p.exists():
+        return "(not run)"
+    df = pd.read_parquet(p)
+    df = df[df["sub"] != "final"]
+    rows = []
+    for (m, dom), g in df.groupby(["model", "domain"], sort=False):
+        mode = int(g.sink_dim.mode().iloc[0])
+        rows.append({"model": MODELS[m], "domain": dom, "sink dim": mode, "share of reads": float((g.sink_dim == mode).mean()),
+                     "M2 median": g.sink_score.median(), "argmax-hit median": g.sink_argmax_frac.median(),
+                     "M3 p50 median": g.peak_p50.median(), "max |h| first": g.max_first.max()})
+    return md(pd.DataFrame(rows))
 
 
 def main() -> None:
@@ -276,6 +294,7 @@ def main() -> None:
         "E sink ablation": ablation_tables,
         "H step-up / super weights": step_up_table,
         "G Base vs Instruct": instruct_table,
+        "Input dependence (en / ja / code)": input_dependence_table,
     }
     for title, fn in sections.items():
         print(f"### {title}\n\n{fn(args.root)}\n")

@@ -355,6 +355,73 @@ def fig_rtn(root: Path, out: Path) -> None:
     plt.close(fig)
 
 
+def fig_rtn_layers(root: Path, out: Path) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.4), sharey=True)
+    for ax, (m, title) in zip(axes, MODELS.items()):
+        p = root / m / "rtn_layers_A4-INT.parquet"
+        if not p.exists():
+            continue
+        df = display_kind(pd.read_parquet(p).rename(columns={"modules": "name"}))
+        for kind in KIND_ORDER:
+            sub = df[df.kind == kind].sort_values("layer")
+            if len(sub):
+                col, mk = KIND_STYLE[kind]
+                ax.plot(sub.layer, 100 * sub.dppl_rel, color=col, marker=mk, markersize=3,
+                        label=KIND_LABEL.get(kind, kind))
+        ax.set_yscale("symlog", linthresh=1)
+        ax.set_title(f"{title}: INT4 per-token activations, one (layer, kind) at a time")
+        ax.set_xlabel("layer")
+        ax.legend(fontsize=7, ncol=2, loc="upper center")
+    axes[0].set_ylabel("ΔPPL [%] (WikiText-2, 24 windows)")
+    fig.tight_layout()
+    fig.savefig(out / "rtn_layers.png")
+    plt.close(fig)
+
+
+ABL_MODES = [("mean", "mean"), ("zero", "zero"), ("direct_zero", "direct only"), ("denom_zero", "denominator only"),
+             ("clamp8", "clamp τ=8"), ("clamp4", "clamp τ=4")]
+
+
+def fig_ablation(root: Path, out: Path) -> None:
+    frames = []
+    for m in MODELS:
+        p = root / m / "ablate_sink.parquet"
+        if p.exists():
+            df = pd.read_parquet(p).assign(model=m)
+            df["key"] = np.where(df["mode"] == "clamp", "clamp" + df.tau.astype(int).astype(str), df["mode"])
+            frames.append(df)
+    if not frames:
+        return
+    df = pd.concat(frames)
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), gridspec_kw={"width_ratios": [1.1, 1, 1]})
+    width = 0.38
+    keys = [k for k, _ in ABL_MODES]
+    for i, m in enumerate(MODELS):
+        sub = df[(df.model == m) & (df.scope == "all")].set_index("key").reindex(keys)
+        axes[0].bar(np.arange(len(keys)) + (i - 0.5) * width, 100 * sub.dppl_rel, width=width * 0.94,
+                    color=MODEL_COLOR[m], label=MODELS[m])
+    axes[0].set_xticks(range(len(keys)), [lbl for _, lbl in ABL_MODES], fontsize=7, rotation=20)
+    axes[0].set_yscale("symlog", linthresh=1)
+    axes[0].set_ylabel("ΔPPL [%] (WikiText-2)")
+    axes[0].set_title("sink-dim intervention at all norms at once")
+    axes[0].set_ylim(0, 100 * float(df[df.scope == "all"].dppl_rel.max()) * 12)
+    axes[0].legend(loc="upper left")
+    for ax, m in zip(axes[1:], MODELS):
+        single = df[(df.model == m) & ~df.scope.isin(["all", "none"])]
+        norms = load(root, m, "residual")
+        depth = norms[norms.kind == "residual"].set_index("name")["depth"]
+        for c, (k, lbl) in zip(C, [ABL_MODES[i] for i in (0, 2, 3, 4)]):
+            ss = single[single.key == k].assign(x=lambda d: d.scope.map(depth) / 2.0).sort_values("x")
+            ax.plot(ss.x, 100 * ss.dppl_rel, color=c, marker="o", markersize=2.5, linewidth=1.2, label=lbl)
+        ax.set_yscale("symlog", linthresh=0.1)
+        ax.set_title(f"{MODELS[m]}: one residual read at a time")
+        ax.set_xlabel("layer (x.0 = attn norm, x.5 = MLP norm)")
+    axes[1].legend(fontsize=7, ncol=2, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out / "ablation.png")
+    plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=Path("results/phase1"))
@@ -363,7 +430,7 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     setup_style()
     for fn in (fig_depth_profile, fig_block_outputs, fig_residual_sink, fig_sink_dims, fig_linear_inputs,
-               fig_attention, fig_weights, fig_peak_hist, fig_rtn):
+               fig_attention, fig_weights, fig_peak_hist, fig_rtn, fig_rtn_layers, fig_ablation):
         fn(args.root, args.out)
         print("wrote", fn.__name__)
     for m in MODELS:
