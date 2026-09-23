@@ -10,7 +10,7 @@ from transformers import PreTrainedModel
 
 
 @torch.no_grad()
-def token_nll(model: PreTrainedModel, input_ids: torch.Tensor, chunk: int = 512) -> torch.Tensor:
+def token_nll(model: PreTrainedModel, input_ids: torch.Tensor, chunk: int = 256) -> torch.Tensor:
     """Per-token NLL [B, T-1] (fp32) of next-token prediction; lm_head is applied in sequence chunks."""
     h = model.model(input_ids=input_ids, use_cache=False).last_hidden_state[:, :-1]
     targets = input_ids[:, 1:]

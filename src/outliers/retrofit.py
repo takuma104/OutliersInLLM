@@ -185,7 +185,7 @@ def load_retrofit(
     apply_retrofit(model, cfg)
     model.load_state_dict({k: v.to(dtype) for k, v in ckpt["state_dict"].items()}, strict=True)
     model.requires_grad_(False)
-    return model, tok, cfg, ckpt.get("extra", {})
+    return model, tok, cfg, ckpt.get("extra", {}) | {"base": ckpt["base"]}
 
 
 def gated_norms(model: nn.Module) -> dict[str, GatedNorm]:
