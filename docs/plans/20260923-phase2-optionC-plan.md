@@ -41,7 +41,7 @@
 
 ## 4. 共通の設定（元計画 §5.2〜5.4 から）
 
-- 損失: `L = KL(p_orig ‖ p_θ) + λ · R`、`R = mean_{token, norm} Σ_j ReLU(|u_j| − τ)²`、`u = x / rms(x)`（残差 Norm の入力）、τ = 8。
+- 損失: `L = KL(p_orig ‖ p_θ) + λ · R`、`R = mean_{token, norm} Σ_j ReLU(|u_j| − τ)²`、`u = x / rms(x)`（残差 Norm の入力）、τ = 8（C1 の本番は τ = 4 に変更。§8）。
 - データ: FineWeb-Edu sample-10BT。2048 token に packing。全アームで同じ順序の同じデータ。held-out は別シャードから取る。
 - 学習: global batch 128 × 2048（約 262K token/step）、200M token ≈ 763 step。AdamW β = (0.9, 0.95)。元の重みは LR 2e-5、新規パラメータ（ゲート・バイアス）は LR 1e-3。warmup 3%、cosine で 10% まで減衰。WD 0.1 は元の Linear 重みだけにかける。スケジュールは全アームで共通にする。
 - 精度: fp32 のマスター重み＋bf16 autocast、gradient checkpointing（non-reentrant）。R はフォワード中にだけ集計し、再計算時は集計しない。
