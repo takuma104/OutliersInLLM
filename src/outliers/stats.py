@@ -223,6 +223,10 @@ class LinearInputAccumulator:
         self.noise = {k: torch.zeros((), **f64) for k in self.act_formats}
         self.y_sq = torch.zeros((), **f64)
         self.y_err = {s.name: torch.zeros((), **f64) for s in self.schemes}
+        # token-averaged versions: each token weighs the same (massive tokens do not dominate)
+        self.n_all = 0
+        self.nsr_tok = {k: torch.zeros((), **f64) for k in self.act_formats}
+        self.y_err_tok = {s.name: torch.zeros((), **f64) for s in self.schemes}
         self._ready = True
 
     @staticmethod
@@ -255,20 +259,27 @@ class LinearInputAccumulator:
         self.n_first += x1.shape[0]
 
         # M6: activation fake-quant SQNR (all tokens)
-        self.sig += xf.square().sum(dtype=torch.float64)
+        self.n_all += xf.shape[0]
+        sig_tok = xf.square().sum(-1).clamp_min(1e-30)
+        self.sig += sig_tok.sum(dtype=torch.float64)
         for name, q in self.act_formats.items():
-            self.noise[name] += (xf - q(xf)).square().sum(dtype=torch.float64)
+            err_tok = (xf - q(xf)).square().sum(-1)
+            self.noise[name] += err_tok.sum(dtype=torch.float64)
+            self.nsr_tok[name] += (err_tok / sig_tok).sum(dtype=torch.float64)
         # M6: layer output relative error
         if weight is not None and self.schemes:
             w = weight.float()
             y = xf @ w.T
-            self.y_sq += y.square().sum(dtype=torch.float64)
+            y_tok = y.square().sum(-1).clamp_min(1e-30)
+            self.y_sq += y_tok.sum(dtype=torch.float64)
             for s in self.schemes:
                 if s.weight is not None and s.weight not in self._wq:
                     self._wq[s.weight] = WEIGHT_FORMATS[s.weight](w)
                 wq = self._wq[s.weight] if s.weight is not None else w
                 xq = ACT_FORMATS[s.act](xf) if s.act is not None else xf
-                self.y_err[s.name] += (y - xq @ wq.T).square().sum(dtype=torch.float64)
+                e_tok = (y - xq @ wq.T).square().sum(-1)
+                self.y_err[s.name] += e_tok.sum(dtype=torch.float64)
+                self.y_err_tok[s.name] += (e_tok / y_tok).sum(dtype=torch.float64)
 
     def channel_table(self) -> pd.DataFrame:
         n = max(self.n_rest, 1)
@@ -303,11 +314,15 @@ class LinearInputAccumulator:
             "kurt_first_mean": self.kurt_first_sum / max(self.n_first, 1),
             "tok_absmax_mean": self.tok_absmax_sum / n,
         }
+        # sqnr_* / out_err_*: token-averaged (primary); *_global: energy-weighted over all tokens
+        na = max(self.n_all, 1)
         for name, noise in self.noise.items():
-            out[f"sqnr_{name}"] = float(10 * torch.log10(self.sig / noise.clamp_min(1e-30)))
+            out[f"sqnr_{name}"] = float(-10 * torch.log10((self.nsr_tok[name] / na).clamp_min(1e-30)))
+            out[f"sqnr_global_{name}"] = float(10 * torch.log10(self.sig / noise.clamp_min(1e-30)))
         for s in self.schemes:
             if float(self.y_sq) > 0:
-                out[f"out_err_{s.name}"] = float((self.y_err[s.name] / self.y_sq).sqrt())
+                out[f"out_err_{s.name}"] = float((self.y_err_tok[s.name] / na).sqrt())
+                out[f"out_err_global_{s.name}"] = float((self.y_err[s.name] / self.y_sq).sqrt())
         return out
 
 

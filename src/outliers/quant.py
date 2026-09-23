@@ -120,6 +120,7 @@ SCHEMES: dict[str, QuantScheme] = {
         QuantScheme("W4A4", "nvfp4", "nvfp4"),
         QuantScheme("A8", None, "int8_tok"),
         QuantScheme("A4", None, "nvfp4"),
+        QuantScheme("A4-INT", None, "int4_tok"),
     )
 }
 

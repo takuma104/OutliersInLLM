@@ -105,10 +105,14 @@ def test_linear_accumulator_matches_numpy() -> None:
     xa = x.reshape(-1, d)
     q = quant_int(xa, 8)
     sq = 10 * np.log10((xa**2).sum().item() / ((xa - q) ** 2).sum().item())
-    assert s["sqnr_int8_tok"] == pytest.approx(sq, rel=1e-4)
+    assert s["sqnr_global_int8_tok"] == pytest.approx(sq, rel=1e-4)
+    nsr_tok = ((xa - q) ** 2).sum(-1) / (xa**2).sum(-1)
+    assert s["sqnr_int8_tok"] == pytest.approx(-10 * np.log10(nsr_tok.mean().item()), rel=1e-4)
     y = xa @ w.T
     yq = quant_nvfp4(xa) @ quant_nvfp4(w, per_row_global=False).T
-    assert s["out_err_W4A4"] == pytest.approx(((y - yq).norm() / y.norm()).item(), rel=1e-4)
+    assert s["out_err_global_W4A4"] == pytest.approx(((y - yq).norm() / y.norm()).item(), rel=1e-4)
+    rel_tok = ((y - yq) ** 2).sum(-1) / (y**2).sum(-1)
+    assert s["out_err_W4A4"] == pytest.approx(rel_tok.mean().sqrt().item(), rel=1e-4)
 
 
 def test_attention_accumulator() -> None:
