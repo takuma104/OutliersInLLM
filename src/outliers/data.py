@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerBase
 
 C4_VALIDATION_SHARD = "en/c4-validation.00000-of-00008.json.gz"
+PROBE_DOCS_PATH = Path(__file__).resolve().parents[2] / "data" / "probe_c4_docs.json"
 
 # token categories for M1 (plan §3.3); first token is always index 0 of a sequence
 CAT_FIRST, CAT_DELIM, CAT_OTHER = 0, 1, 2
@@ -51,6 +54,11 @@ def select_probe_docs(
             if len(chosen) == n_docs:
                 return chosen
     raise ValueError(f"only {len(chosen)} documents with >= {seq_len} tokens")
+
+
+def load_probe_doc_indices(path: Path = PROBE_DOCS_PATH) -> list[int]:
+    """Doc indices written by scripts/phase1_make_probe.py."""
+    return list(json.loads(path.read_text())["doc_indices"])
 
 
 def tokenize_prefixes(
