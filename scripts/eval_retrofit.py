@@ -28,7 +28,7 @@ from outliers.data import (
 from outliers.evaluate import evaluate_lm
 from outliers.hooks import OutlierProbe
 from outliers.losses import fused_kl
-from outliers.models import NON_QUANT_KINDS, iter_linears, load_model
+from outliers.models import NON_QUANT_KINDS, iter_linears, load_model, set_attn_impl
 from outliers.quant import SCHEMES, fake_quantize
 from outliers.retrofit import RetrofitConfig, attn_gates, gated_norms, load_retrofit
 from outliers.stats import norm_weight_table, weight_stats_table
@@ -104,6 +104,7 @@ def main() -> None:
     ap.add_argument("--lm-eval-limit", type=int, default=None)
     ap.add_argument("--lm-eval-batch", type=int, default=32)
     ap.add_argument("--lm-eval-only", action="store_true", help="only run lm-eval and merge into summary.json")
+    ap.add_argument("--attention", action="store_true", help="M7 attention-sink probe (eager attention, 32 docs)")
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument("--data", type=Path, default=Path("results/data/fineweb_edu"))
     args = ap.parse_args()
@@ -175,6 +176,18 @@ def main() -> None:
                     f"linear/{kind}/sqnr_int4_median": float(sub.sqnr_int4_tok.median()),
                     f"linear/{kind}/out_err_W4A4_median": float(sub.out_err_W4A4.median())}
     log("outlier probe done", t0)
+
+    if args.attention:
+        set_attn_impl(model, "eager")
+        with OutlierProbe(model, residual=False, blocks=False, linears=False, attention=True) as p:
+            p.run(probe.input_ids[:32], probe.categories[:32], batch_size=1)
+            attn = p.results().attention
+        set_attn_impl(model, "sdpa")
+        attn.to_parquet(out / "attention.parquet")
+        summary |= {"attn/sink_ratio": float(attn.is_sink_head.mean()),
+                    "attn/to_first_mean": float(attn.attn_to_first.mean()),
+                    "attn/v_norm_ratio_median": float(attn.v_norm_ratio.median())}
+        log(f"attention probe done (sink ratio {summary['attn/sink_ratio']:.2f})", t0)
 
     # RTN fake quantization
     base_ppl = lm["wikitext2"]["ppl"]
