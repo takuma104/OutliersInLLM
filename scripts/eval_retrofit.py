@@ -75,11 +75,11 @@ def neutralize(model: nn.Module, what: str) -> Iterator[None]:
             p.data.copy_(d)
 
 
-def run_lm_eval(model: nn.Module, tok, limit: int | None) -> dict[str, float]:  # noqa: ANN001
+def run_lm_eval(model: nn.Module, tok, limit: int | None, batch_size: int = 32) -> dict[str, float]:  # noqa: ANN001
     from lm_eval import simple_evaluate
     from lm_eval.models.huggingface import HFLM
 
-    lm = HFLM(pretrained=model, tokenizer=tok, batch_size=32, max_length=2048)
+    lm = HFLM(pretrained=model, tokenizer=tok, batch_size=batch_size, max_length=2048)
     res = simple_evaluate(model=lm, tasks=LM_EVAL_TASKS, num_fewshot=0, limit=limit, log_samples=False)
     out, main_scores = {}, []
     for task, r in res["results"].items():
@@ -102,6 +102,8 @@ def main() -> None:
     ap.add_argument("--lm-batch", type=int, default=8, help="batch size for PPL evaluation")
     ap.add_argument("--no-lm-eval", action="store_true")
     ap.add_argument("--lm-eval-limit", type=int, default=None)
+    ap.add_argument("--lm-eval-batch", type=int, default=32)
+    ap.add_argument("--lm-eval-only", action="store_true", help="only run lm-eval and merge into summary.json")
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument("--data", type=Path, default=Path("results/data/fineweb_edu"))
     args = ap.parse_args()
@@ -116,6 +118,12 @@ def main() -> None:
         cfg, base, name = RetrofitConfig(), args.base, f"base-{args.base}"
         out = args.out or Path("results/phase2") / name / "eval"
     out.mkdir(parents=True, exist_ok=True)
+    if args.lm_eval_only:
+        summary = json.loads((out / "summary.json").read_text())
+        summary |= run_lm_eval(model, tok, args.lm_eval_limit, args.lm_eval_batch)
+        (out / "summary.json").write_text(json.dumps(summary, indent=2))
+        log(f"lm-eval avg acc {summary['lmeval/avg_acc']:.4f}", t0)
+        return
     teacher, _ = load_model(base)
     summary: dict[str, float | str] = {"run": name, "base": base, "retrofit": json.dumps(cfg.__dict__)}
     log(f"loaded {name} ({cfg})", t0)
@@ -186,7 +194,7 @@ def main() -> None:
     log("RTN done", t0)
 
     if not args.no_lm_eval:
-        summary |= run_lm_eval(model, tok, args.lm_eval_limit)
+        summary |= run_lm_eval(model, tok, args.lm_eval_limit, args.lm_eval_batch)
         log(f"lm-eval avg acc {summary['lmeval/avg_acc']:.4f}", t0)
 
     (out / "summary.json").write_text(json.dumps(summary, indent=2))

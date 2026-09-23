@@ -5,6 +5,7 @@ description = "Outlier evaluation and GatedNorm retrofit experiments for small L
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "accelerate>=1.15.0",
     "datasets>=5.0.1",
     "flash-linear-attention>=0.5.2",
     "lm-eval>=0.4.13",
