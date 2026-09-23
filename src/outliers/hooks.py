@@ -12,7 +12,14 @@ import torch
 from torch import nn
 from transformers import PreTrainedModel
 
-from outliers.models import decoder_layers, iter_linears, iter_residual_norms, layer_types, token_mixer
+from outliers.models import (
+    NON_QUANT_KINDS,
+    decoder_layers,
+    iter_linears,
+    iter_residual_norms,
+    layer_types,
+    token_mixer,
+)
 from outliers.quant import QuantScheme
 from outliers.stats import AttentionAccumulator, LinearInputAccumulator, ResidualAccumulator
 
@@ -105,13 +112,14 @@ class OutlierProbe:
         self.linears: dict[str, tuple[dict[str, Any], LinearInputAccumulator]] = {}
         if linears:
             for li in iter_linears(model):
+                q = quant_error and li.kind not in NON_QUANT_KINDS  # retrofit gates etc. are not quantized
                 acc = LinearInputAccumulator(
                     li.module.in_features,
-                    act_formats=None if quant_error else {},
-                    schemes=schemes if quant_error else [],
+                    act_formats=None if q else {},
+                    schemes=schemes if q else [],
                 )
                 self.linears[li.name] = ({"name": li.name, "kind": li.kind, "layer": li.layer}, acc)
-                self.hooks.pre(li.module, self._linear_pre(acc, li.module, quant_error))
+                self.hooks.pre(li.module, self._linear_pre(acc, li.module, q))
 
         self.attention: dict[int, AttentionAccumulator] = {}
         if attention:

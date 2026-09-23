@@ -10,7 +10,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from outliers.data import token_byte_lengths, token_categories, delimiter_token_mask
 from outliers.evaluate import evaluate_lm, token_nll
 from outliers.hooks import OutlierProbe
-from outliers.models import iter_linears, iter_residual_norms, layer_types, load_model, set_attn_impl
+from outliers.models import NON_QUANT_KINDS, iter_linears, iter_residual_norms, layer_types, load_model, set_attn_impl
 from outliers.quant import SCHEMES, fake_quantize
 from outliers.stats import norm_weight_table, weight_stats_table
 
@@ -86,7 +86,8 @@ def test_probe_is_passive_and_complete(loaded: tuple[str, PreTrainedModel, PreTr
     emb = model.model.embed_tokens(ids).float()
     row = res.residual[res.residual.name == "model.layers.0.input_layernorm"].iloc[0]
     assert row.max_first == pytest.approx(float(emb[:, 0].abs().max()), rel=1e-6)
-    assert res.linears.filter(like="sqnr_").notna().all().all()
+    quantized = res.linears[~res.linears.kind.isin(NON_QUANT_KINDS)]
+    assert quantized.filter(like="sqnr_").notna().all().all()
 
 
 def test_attention_probe_eager(loaded: tuple[str, PreTrainedModel, PreTrainedTokenizerBase]) -> None:
