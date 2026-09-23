@@ -103,11 +103,20 @@ def fused_ce(h: torch.Tensor, lm_head: nn.Linear, targets: torch.Tensor, chunk: 
     )
 
 
-def peak_penalty(x: torch.Tensor, tau: float, eps: float = 1e-6) -> torch.Tensor:
-    """mean over tokens of Σ_j ReLU(|u_j| − τ)², u = x / rms(x) (scale-invariant)."""
+def peak_penalty(x: torch.Tensor, tau: float, eps: float = 1e-6, first_weight: float = 1.0) -> torch.Tensor:
+    """Weighted mean over tokens of Σ_j ReLU(|u_j| − τ)², u = x / rms(x) (scale-invariant).
+
+    ``first_weight`` re-weights position 0 of each sequence ([B, T, D] input); 1.0 is the plain token mean. A plain
+    mean dilutes a first-token massive activation by 1/T, so C2 (Qwen3) can raise it.
+    """
     xf = x.float()
     u = xf * torch.rsqrt(xf.square().mean(-1, keepdim=True) + eps)
-    return F.relu(u.abs() - tau).square().sum(-1).mean()
+    p = F.relu(u.abs() - tau).square().sum(-1)
+    if first_weight == 1.0:
+        return p.mean()
+    w = torch.ones_like(p)
+    w[..., 0] = first_weight
+    return (p * w).sum() / w.sum()
 
 
 class OutlierRegularizer:
@@ -117,8 +126,9 @@ class OutlierRegularizer:
     replays exactly the same ops; the value is only collected while ``recording`` (the first forward).
     """
 
-    def __init__(self, model: nn.Module, tau: float = 8.0) -> None:
+    def __init__(self, model: nn.Module, tau: float = 8.0, first_weight: float = 1.0) -> None:
         self.tau = tau
+        self.first_weight = first_weight
         self.active = False
         self.recording = False
         self._values: list[torch.Tensor] = []
@@ -131,7 +141,7 @@ class OutlierRegularizer:
         def hook(_m: nn.Module, args: tuple[torch.Tensor, ...]) -> None:
             if not (self.active and torch.is_grad_enabled()):
                 return
-            pen = peak_penalty(args[0], self.tau)
+            pen = peak_penalty(args[0], self.tau, first_weight=self.first_weight)
             if self.recording:
                 self._values.append(pen)
                 self._names.append(name)

@@ -97,3 +97,11 @@ def test_peak_penalty() -> None:
     u0 = 100.0 / ((100.0**2 + 63) / 64) ** 0.5
     expected = max(u0 - 4.0, 0.0) ** 2
     assert peak_penalty(x, 4.0).item() == pytest.approx(expected, rel=1e-5)
+
+
+def test_peak_penalty_first_weight() -> None:
+    x = torch.ones(2, 4, 64)
+    x[:, 0, 0] = 1000.0  # first token: one dominant dim, u_0 close to √64 = 8
+    p_first = max(1000.0 / ((1000.0**2 + 63) / 64) ** 0.5 - 4.0, 0.0) ** 2
+    assert peak_penalty(x, 4.0).item() == pytest.approx(p_first / 4, rel=1e-5)
+    assert peak_penalty(x, 4.0, first_weight=3.0).item() == pytest.approx(3 * p_first / 6, rel=1e-5)

@@ -178,6 +178,7 @@ def main() -> None:
     ap.add_argument("--loss", choices=["kl", "ce"], default="kl")
     ap.add_argument("--lam", type=float, default=0.0)
     ap.add_argument("--tau", type=float, default=8.0)
+    ap.add_argument("--first-weight", type=float, default=1.0, help="weight of position 0 in R (1 = token mean)")
     ap.add_argument("--gated-norm", action="store_true")
     ap.add_argument("--gn-rank", type=int, default=16)
     ap.add_argument("--linear-bias", action="store_true")
@@ -215,7 +216,7 @@ def main() -> None:
     student.requires_grad_(True)
     student.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     student.config.use_cache = False
-    reg = OutlierRegularizer(student, tau=args.tau)
+    reg = OutlierRegularizer(student, tau=args.tau, first_weight=args.first_weight)
 
     accum = args.global_batch // args.micro_batch
     total_steps = int(args.tokens // (args.global_batch * args.seq_len))
