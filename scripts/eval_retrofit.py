@@ -99,6 +99,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--probe-docs", type=int, default=128)
     ap.add_argument("--heldout-seqs", type=int, default=64)
+    ap.add_argument("--lm-batch", type=int, default=8, help="batch size for PPL evaluation")
     ap.add_argument("--no-lm-eval", action="store_true")
     ap.add_argument("--lm-eval-limit", type=int, default=None)
     ap.add_argument("--no-wandb", action="store_true")
@@ -124,7 +125,8 @@ def main() -> None:
     probe = build_probe_set(tok, c4_validation_texts(), load_probe_doc_indices()[: args.probe_docs], 2048)
     held = torch.from_numpy(np.load(args.data / base / "heldout.npy", mmap_mode="r")[: args.heldout_seqs * 2048]
                             .astype(np.int64)).view(-1, 2048)
-    lm = {"wikitext2": evaluate_lm(model, wt, bl), "c4_probe": evaluate_lm(model, probe.input_ids, bl)}
+    lm = {"wikitext2": evaluate_lm(model, wt, bl, args.lm_batch),
+          "c4_probe": evaluate_lm(model, probe.input_ids, bl, args.lm_batch)}
     for k, v in lm.items():
         summary |= {f"{k}/ppl": v["ppl"], f"{k}/bpb": v["bpb"]}
     summary["heldout/kl"] = heldout_kl(model, teacher, held)
@@ -136,7 +138,7 @@ def main() -> None:
         if active:
             with neutralize(model, what):
                 summary[f"neutralize_{what}/heldout_kl"] = heldout_kl(model, teacher, held)
-                summary[f"neutralize_{what}/wikitext2_ppl"] = evaluate_lm(model, wt, bl)["ppl"]
+                summary[f"neutralize_{what}/wikitext2_ppl"] = evaluate_lm(model, wt, bl, args.lm_batch)["ppl"]
     log("gate usage done", t0)
 
     # outliers (Phase 1 M1-M8 on the C4 probe)
@@ -172,11 +174,11 @@ def main() -> None:
     kinds = sorted({li.kind for li in iter_linears(model)} - NON_QUANT_KINDS)
     for scheme in RTN_SCHEMES:
         with fake_quantize(model, SCHEMES[scheme]):
-            ppl = evaluate_lm(model, wt, bl)["ppl"]
+            ppl = evaluate_lm(model, wt, bl, args.lm_batch)["ppl"]
         rtn_rows.append({"scheme": scheme, "kind": "all", "ppl": ppl})
     for kind in kinds:
         with fake_quantize(model, SCHEMES["A4-INT"], kinds=[kind]):
-            rtn_rows.append({"scheme": "A4-INT", "kind": kind, "ppl": evaluate_lm(model, wt, bl)["ppl"]})
+            rtn_rows.append({"scheme": "A4-INT", "kind": kind, "ppl": evaluate_lm(model, wt, bl, args.lm_batch)["ppl"]})
     rtn = pd.DataFrame(rtn_rows).assign(dppl_rel=lambda d: d.ppl / base_ppl - 1)
     rtn.to_parquet(out / "rtn.parquet")
     for row in rtn.itertuples():
