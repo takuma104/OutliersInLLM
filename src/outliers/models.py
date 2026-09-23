@@ -33,10 +33,14 @@ _LINEAR_KIND: dict[str, str] = {
     "up_proj": "gate_up",
     "down_proj": "down_proj",
     "lm_head": "lm_head",
+    # Phase 2 retrofit modules (outliers.retrofit)
+    "gn_down": "gatednorm",
+    "gn_up": "gatednorm",
+    "ga_proj": "attn_gate",
 }
 
 # kinds excluded from quantization (measured only; plan §3.3)
-NON_QUANT_KINDS: frozenset[str] = frozenset({"in_proj_ab", "lm_head"})
+NON_QUANT_KINDS: frozenset[str] = frozenset({"in_proj_ab", "lm_head", "gatednorm", "attn_gate"})
 
 
 def resolve_model_id(name: str) -> str:
