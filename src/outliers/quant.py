@@ -145,19 +145,22 @@ def fake_quantize(
     scheme: QuantScheme,
     kinds: Iterable[str] | None = None,
     act_kinds: Iterable[str] | None = None,
+    name_filter: Callable[[str], bool] | None = None,
 ) -> Iterator[None]:
     """Temporarily fake-quantize nn.Linear weights (in place) and inputs (pre-hook).
 
     ``kinds`` restricts both weight and activation quantization to those module kinds; ``act_kinds`` further
-    restricts activation quantization (e.g. per-kind bottleneck search). lm_head and GDN in_proj_a/b are never
-    quantized (plan §3.3).
+    restricts activation quantization (e.g. per-kind bottleneck search); ``name_filter`` further selects modules by
+    name. lm_head and GDN in_proj_a/b are never quantized (plan §3.3).
     """
     kind_set = None if kinds is None else set(kinds)
     act_set = None if act_kinds is None else set(act_kinds)
     targets = [
         li
         for li in iter_linears(model)
-        if li.kind not in NON_QUANT_KINDS and (kind_set is None or li.kind in kind_set)
+        if li.kind not in NON_QUANT_KINDS
+        and (kind_set is None or li.kind in kind_set)
+        and (name_filter is None or name_filter(li.name))
     ]
     saved: list[tuple[nn.Linear, torch.Tensor]] = []
     handles: list[torch.utils.hooks.RemovableHandle] = []

@@ -21,6 +21,7 @@ from outliers.quant import SCHEMES, fake_quantize
 
 FULL_SCHEMES = ["W8A8", "W8A8-FP8", "W4A16", "W4A8", "W4A4", "A8", "A4", "A4-INT"]
 PER_KIND_SCHEMES = ["A4", "A4-INT"]
+SUBSETS = {"out_proj": "linear_attn.out_proj", "o_proj_attn": "self_attn.o_proj"}
 WANDB_PROJECT = "OutliersInLLM"
 
 
@@ -42,11 +43,13 @@ def main() -> None:
 
     rows: list[dict[str, object]] = []
 
-    def run(scheme: str, kind: str | None) -> None:
-        with fake_quantize(model, SCHEMES[scheme], kinds=None if kind is None else [kind]):
+    def run(scheme: str, kind: str | None, sub: str | None = None) -> None:
+        name_filter = None if sub is None else (lambda n: SUBSETS[sub] in n)
+        with fake_quantize(model, SCHEMES[scheme], kinds=None if kind is None else [kind], name_filter=name_filter):
             r = evaluate_lm(model, windows, bl, batch_size=args.batch_size)
-        rows.append({"scheme": scheme, "kind": kind or "all"} | r)
-        print(f"[{time.perf_counter() - t0:6.0f}s] {scheme:9s} {kind or 'all':10s} ppl={r['ppl']:.4f}", flush=True)
+        label = sub or kind or "all"
+        rows.append({"scheme": scheme, "kind": label} | r)
+        print(f"[{time.perf_counter() - t0:6.0f}s] {scheme:9s} {label:11s} ppl={r['ppl']:.4f}", flush=True)
 
     base = evaluate_lm(model, windows, bl, batch_size=args.batch_size)
     rows.append({"scheme": "bf16", "kind": "none"} | base)
@@ -55,6 +58,10 @@ def main() -> None:
     for s in PER_KIND_SCHEMES:
         for k in kinds:
             run(s, k)
+        if any(li.kind == "o_proj" and SUBSETS["out_proj"] in li.name for li in iter_linears(model)):
+            # the normalized o_proj kind mixes attention o_proj and the GDN out_proj
+            for sub in SUBSETS:
+                run(s, "o_proj", sub)
 
     df = pd.DataFrame(rows)
     df["dppl"] = df.ppl - base["ppl"]

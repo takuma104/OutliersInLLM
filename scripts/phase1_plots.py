@@ -107,7 +107,7 @@ def fig_depth_profile(root: Path, out: Path) -> None:
         ax.plot(x, r["median_abs"], color=GRAY, label="median")
         ax.set_yscale("log")
         ax.set_title(f"{title}: largest |h| in the residual stream")
-        ax.legend(ncol=4, loc="upper left")
+        ax.legend(ncol=2, loc="center right")
         ax = axes[1, j]
         for cat, col in CAT_COLOR.items():
             ax.plot(x, r[f"max_{cat}"], color=col, marker="o", markersize=2.5, label=f"{cat} token (max)")
@@ -117,7 +117,7 @@ def fig_depth_profile(root: Path, out: Path) -> None:
         ax.set_yscale("log")
         ax.set_title("max |h| by token type")
         ax.set_xlabel("layer (x.0 = before token mixer, x.5 = before MLP)")
-        ax.legend(loc="upper left")
+        ax.legend(loc="lower right")
     axes[0, 0].set_ylabel("|h|")
     axes[1, 0].set_ylabel("|h|")
     fig.tight_layout()
@@ -245,7 +245,7 @@ def fig_linear_inputs(root: Path, out: Path) -> None:
 
 
 def fig_attention(root: Path, out: Path) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), gridspec_kw={"width_ratios": [1, 1.6]})
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), gridspec_kw={"width_ratios": [1, 1.6]})
     for j, (m, title) in enumerate(MODELS.items()):
         a = load(root, m, "attention")
         piv = a.pivot(index="layer", columns="head", values="attn_to_first")
@@ -255,7 +255,7 @@ def fig_attention(root: Path, out: Path) -> None:
         ax.set_xlabel("head")
         ax.set_ylabel("layer")
         ax.grid(False)
-        ax.set_title(f"{title}: attention to first token (sink ratio {a.is_sink_head.mean():.2f})")
+        ax.set_title(f"{title}\nattention to first token (sink ratio {a.is_sink_head.mean():.2f})")
     fig.colorbar(im, ax=axes, shrink=0.8, label="mean attention to token 0")
     fig.savefig(out / "attention_sink.png")
     plt.close(fig)
@@ -320,7 +320,7 @@ def fig_rtn(root: Path, out: Path) -> None:
     df = pd.concat(frames)
     full = df[(df.kind == "all")]
     per_kind = df[(df.kind != "all") & (df.kind != "none")]
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.4), gridspec_kw={"width_ratios": [1.2, 1]})
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), gridspec_kw={"width_ratios": [1.2, 1, 1]})
     schemes = [s for s in ["W8A8", "W8A8-FP8", "W4A16", "W4A8", "W4A4", "A8", "A4", "A4-INT"] if s in set(full.scheme)]
     width = 0.38
     for i, m in enumerate(MODELS):
@@ -328,26 +328,28 @@ def fig_rtn(root: Path, out: Path) -> None:
         axes[0].bar(np.arange(len(schemes)) + (i - 0.5) * width, 100 * sub.dppl_rel, width=width * 0.94,
                     color=MODEL_COLOR[m], label=MODELS[m])
     axes[0].set_xticks(range(len(schemes)), schemes, fontsize=7.5)
-    axes[0].set_yscale("symlog", linthresh=1)
     axes[0].set_ylabel("ΔPPL [%] (WikiText-2)")
     axes[0].set_title("RTN fake-quant, whole model")
-    axes[0].legend()
-    kinds = [k for k in KIND_ORDER if k in set(per_kind.kind)]
-    labels = []
-    xs = np.arange(len(kinds) * 2)
-    for i, m in enumerate(MODELS):
-        vals = []
-        for k in kinds:
-            for s in ("A4", "A4-INT"):
-                v = per_kind[(per_kind.model == m) & (per_kind.kind == k) & (per_kind.scheme == s)].dppl_rel
+    kinds = ["qkv", "in_proj_z", "o_proj", "o_proj_attn", "out_proj", "gate_up", "down_proj"]
+    kinds = [k for k in kinds if k in set(per_kind.kind)]
+    labels = [{"o_proj": "o_proj\n(all)", "o_proj_attn": "o_proj\n(attn)", "out_proj": "out_proj\n(GDN)"}.get(k, k)
+              for k in kinds]
+    for ax, scheme, title in ((axes[1], "A4", "A-only NVFP4, one kind at a time"),
+                              (axes[2], "A4-INT", "A-only INT4 per-token, one kind at a time")):
+        for i, m in enumerate(MODELS):
+            vals = []
+            for k in kinds:
+                v = per_kind[(per_kind.model == m) & (per_kind.kind == k) & (per_kind.scheme == scheme)].dppl_rel
                 vals.append(100 * float(v.iloc[0]) if len(v) else np.nan)
-        axes[1].bar(xs + (i - 0.5) * width, vals, width=width * 0.94, color=MODEL_COLOR[m], label=MODELS[m])
-    for k in kinds:
-        labels += [f"{k}\nNVFP4", f"{k}\nINT4"]
-    axes[1].set_xticks(xs, labels, fontsize=6.5)
-    axes[1].set_yscale("symlog", linthresh=1)
-    axes[1].set_title("activation-only 4-bit, one module kind at a time")
-    axes[1].legend()
+            ax.bar(np.arange(len(kinds)) + (i - 0.5) * width, vals, width=width * 0.94, color=MODEL_COLOR[m],
+                   label=MODELS[m])
+        ax.set_xticks(range(len(kinds)), labels, fontsize=7)
+        ax.set_title(title)
+    top = 100 * float(df.dppl_rel.max())
+    for ax in axes:
+        ax.set_yscale("symlog", linthresh=1)
+        ax.set_ylim(0, top * 3)
+    axes[0].legend(loc="upper left")
     fig.tight_layout()
     fig.savefig(out / "rtn.png")
     plt.close(fig)

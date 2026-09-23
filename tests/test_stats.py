@@ -97,6 +97,9 @@ def test_linear_accumulator_matches_numpy() -> None:
     sigma = xr.std()
     assert s["sigma"] == pytest.approx(sigma, rel=1e-4)
     assert s["n_ch_over_6sigma"] == int((ch_absmax > 6 * sigma).sum())
+    ch_rms = np.sqrt((xr**2).mean(0))
+    assert s["n_ch_rms_over_6x"] == int((ch_rms > 6 * _lower_median(ch_rms)).sum()) == 1
+    assert s["ch_rms_max_over_median"] == pytest.approx(ch_rms.max() / _lower_median(ch_rms), rel=1e-4)
     c = xr - xr.mean(-1, keepdims=True)
     kurt = (c**4).mean(-1) / ((c**2).mean(-1) ** 2) - 3
     assert s["kurt_mean"] == pytest.approx(kurt.mean(), rel=1e-4)

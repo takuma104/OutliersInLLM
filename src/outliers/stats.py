@@ -300,6 +300,7 @@ class LinearInputAccumulator:
         mean_all = float(self.ch_sum.sum()) / (n * self.dim)
         sigma = (float(self.ch_sumsq.sum()) / (n * self.dim) - mean_all**2) ** 0.5
         absmax_rest = float(self.ch_absmax_rest.max())
+        ch_rms = (self.ch_sumsq / n).sqrt().float()
         out: dict[str, float | int] = {
             "n_tokens": self.n_rest + self.n_first,
             "absmax": max(absmax_rest, float(self.ch_absmax_first.max())),
@@ -309,6 +310,9 @@ class LinearInputAccumulator:
             "absmax_over_sigma": absmax_rest / max(sigma, 1e-12),
             "ch_max_over_median": absmax_rest / max(float(self.ch_absmax_rest.median()), 1e-12),
             "n_ch_over_6sigma": int((self.ch_absmax_rest > self.sigma_mult * sigma).sum()),
+            # systematic outlier channels: channel RMS over tokens ≫ typical channel RMS
+            "ch_rms_max_over_median": float(ch_rms.max() / ch_rms.median().clamp_min(1e-12)),
+            "n_ch_rms_over_6x": int((ch_rms > self.sigma_mult * ch_rms.median()).sum()),
             "kurt_mean": self.kurt_sum / n,
             "kurt_max": self.kurt_max,
             "kurt_first_mean": self.kurt_first_sum / max(self.n_first, 1),
