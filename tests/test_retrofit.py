@@ -69,7 +69,7 @@ def test_training_step_with_checkpointing(name: str) -> None:
     student.train()
     student.requires_grad_(True)
     student.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    reg = OutlierRegularizer(student, tau=8.0)
+    reg = OutlierRegularizer(student, tau=8.0, site="both")
     ids = _ids(tok)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         with torch.no_grad():
@@ -79,12 +79,14 @@ def test_training_step_with_checkpointing(name: str) -> None:
         r, per_norm = reg.collect()
         kl = fused_kl(h, student.lm_head, th, teacher.lm_head, chunk=64)
     assert kl.item() == pytest.approx(0.0, abs=1e-6)  # identical function at init
-    assert len(per_norm) == len(iter_residual_norms(student))
+    assert len(per_norm) == 2 * len(iter_residual_norms(student))
 
-    # R equals a direct computation on the recorded norm inputs
+    # R equals a direct computation on the recorded norm inputs and outputs
     captured: list[torch.Tensor] = []
     hooks = [ni.module.register_forward_pre_hook(lambda _m, a: captured.append(a[0].detach()))
              for ni in iter_residual_norms(student)]
+    hooks += [ni.module.register_forward_hook(lambda _m, _a, o: captured.append(o.detach()))
+              for ni in iter_residual_norms(student)]
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
         student.model(input_ids=ids, use_cache=False)
     for hk in hooks:

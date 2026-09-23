@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
@@ -119,14 +119,21 @@ def peak_penalty(x: torch.Tensor, tau: float, eps: float = 1e-6, first_weight: f
     return (p * w).sum() / w.sum()
 
 
+RegSite = Literal["in", "out", "both"]
+
+
 class OutlierRegularizer:
-    """R = mean over residual norms of ``peak_penalty`` of the norm input (plan §5.2).
+    """R = mean over residual norms (and sites) of ``peak_penalty`` (plan §5.2).
+
+    ``site``: "in" = the norm input x (the residual stream; the plan's definition), "out" = the norm module's output
+    (after GatedNorm's gate, i.e. what the next Linears read and what gets quantized), "both" = both. With "in" only,
+    a gate can shrink the residual sink yet re-amplify the same dims after the norm (seen in the C1 pilot).
 
     The hooks compute the penalty whenever ``active`` and grad is enabled, so that gradient-checkpoint recomputation
     replays exactly the same ops; the value is only collected while ``recording`` (the first forward).
     """
 
-    def __init__(self, model: nn.Module, tau: float = 8.0, first_weight: float = 1.0) -> None:
+    def __init__(self, model: nn.Module, tau: float = 8.0, first_weight: float = 1.0, site: RegSite = "in") -> None:
         self.tau = tau
         self.first_weight = first_weight
         self.active = False
@@ -135,16 +142,28 @@ class OutlierRegularizer:
         self._names: list[str] = []
         self._handles = []
         for ni in iter_residual_norms(model):
-            self._handles.append(ni.module.register_forward_pre_hook(self._hook(ni.name)))
+            if site in ("in", "both"):
+                self._handles.append(ni.module.register_forward_pre_hook(self._pre_hook(ni.name + ":in")))
+            if site in ("out", "both"):
+                self._handles.append(ni.module.register_forward_hook(self._post_hook(ni.name + ":out")))
 
-    def _hook(self, name: str):  # noqa: ANN202
+    def _add(self, name: str, x: torch.Tensor) -> None:
+        if not (self.active and torch.is_grad_enabled()):
+            return
+        pen = peak_penalty(x, self.tau, first_weight=self.first_weight)
+        if self.recording:
+            self._values.append(pen)
+            self._names.append(name)
+
+    def _pre_hook(self, name: str):  # noqa: ANN202
         def hook(_m: nn.Module, args: tuple[torch.Tensor, ...]) -> None:
-            if not (self.active and torch.is_grad_enabled()):
-                return
-            pen = peak_penalty(args[0], self.tau, first_weight=self.first_weight)
-            if self.recording:
-                self._values.append(pen)
-                self._names.append(name)
+            self._add(name, args[0])
+
+        return hook
+
+    def _post_hook(self, name: str):  # noqa: ANN202
+        def hook(_m: nn.Module, _args: tuple[torch.Tensor, ...], out: torch.Tensor) -> None:
+            self._add(name, out)
 
         return hook
 
