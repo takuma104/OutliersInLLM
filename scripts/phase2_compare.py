@@ -94,8 +94,11 @@ def final_row(r: pd.Series) -> dict[str, float]:
             row[k] = last[f"probe/{k}"]
     if r.eval is not None:
         e = r.eval
-        row |= {"WT2 PPL": e["wikitext2/ppl"], "RTN W4A4": e.get("rtn/W4A4"), "RTN A4-INT": e.get("rtn/A4-INT"),
-                "lm-eval avg": e.get("lmeval/avg_acc")}
+        undo = next((v for k, v in e.items() if k.startswith("neutralize_") and k.endswith("heldout_kl")), None)
+        row |= {"WT2 PPL": e["wikitext2/ppl"], "eval KL": e["heldout/kl"], "eval M2": e["outlier/sink_score_median"],
+                "eval p50": e["outlier/peak_p50_median"], "W4A4": e.get("rtn/W4A4"), "A4-INT@qkv": e.get("rtn/A4-INT@qkv"),
+                "A4-INT@gate_up": e.get("rtn/A4-INT@gate_up"), "A4-INT": e.get("rtn/A4-INT"),
+                "lm-eval avg": e.get("lmeval/avg_acc"), "KL w/o new params": undo}
     return row
 
 
