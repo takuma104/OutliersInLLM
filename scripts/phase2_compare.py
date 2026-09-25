@@ -10,6 +10,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 import numpy as np
 import pandas as pd
 
@@ -102,21 +103,41 @@ def final_row(r: pd.Series) -> dict[str, float]:
     return row
 
 
-def fig_pareto(table: pd.DataFrame, base: dict[str, float], out: Path) -> None:
-    arms = sorted(table.arm.unique())
-    fig, axes = plt.subplots(1, len(PARETO_Y), figsize=(3.6 * len(PARETO_Y), 3.2))
-    for ax, (k, label) in zip(axes, PARETO_Y):
-        ax.scatter([1e-5], [base[k]], color=GRAY, marker="*", s=80, zorder=3, label="original")
-        for i, arm in enumerate(arms):
-            sub = table[table.arm == arm].sort_values("λ")
-            ax.plot(sub["held-out KL"], sub[k], color=C[i % len(C)], marker="o", markersize=5, label=arm)
+EVAL_Y = [("eval p50", "outlier/peak_p50_median", "peak |u| p50 (median over reads)"),
+          ("eval M2", "outlier/sink_score_median", "residual sink score M2 (median)"),
+          ("A4-INT@gate_up", "rtn/A4-INT@gate_up", "ΔPPL, INT4 per-token acts on gate_up"),
+          ("W4A4", "rtn/W4A4", "ΔPPL, W4A4 NVFP4")]
+ARM_COLOR = {"orig": C[2], "GatedNorm": C[0], "bias": C[1]}
+LAM_MARKER = ["o", "s", "^", "D"]
+
+
+def fig_pareto(table: pd.DataFrame, base_eval: dict[str, float] | None, out: Path) -> None:
+    """Held-out KL vs outlier / quantization metrics from the checkpoint evaluations; original model at KL = 0."""
+    t = table.dropna(subset=["eval KL"])
+    if t.empty:
+        return
+    lams = sorted(t["λ"].unique())
+    fig, axes = plt.subplots(1, len(EVAL_Y), figsize=(3.4 * len(EVAL_Y), 3.2))
+    for ax, (col, base_key, label) in zip(axes, EVAL_Y):
+        if base_eval is not None and base_key in base_eval:
+            ax.scatter([0], [base_eval[base_key]], color=GRAY, marker="*", s=90, zorder=3, label="original")
+        for i, arm in enumerate(sorted(t.arm.unique())):
+            sub = t[t.arm == arm].sort_values("λ")
+            color = ARM_COLOR.get(arm, C[(i + 3) % len(C)])
+            ax.plot(sub["eval KL"], sub[col], color=color, linewidth=1.2, label=arm)
             for _, row in sub.iterrows():
-                ax.annotate(f"λ={row['λ']:g}", (row["held-out KL"], row[k]), xytext=(4, 3),
-                            textcoords="offset points", fontsize=6.5, color="#52514e")
-        ax.set_xscale("log")
-        ax.set_xlabel("held-out KL(orig ‖ θ)  (original at 1e-5)")
+                ax.scatter(row["eval KL"], row[col], color=color, s=36, zorder=3,
+                           marker=LAM_MARKER[lams.index(row["λ"]) % len(LAM_MARKER)])
+        ax.set_xlim(left=-0.0005)
+        ax.set_xlabel("held-out KL(orig ‖ θ)")
         ax.set_title(label)
-    axes[0].legend(fontsize=7)
+        if col.startswith(("A4", "W4")):
+            ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+    handles, labels = axes[0].get_legend_handles_labels()
+    for j, lam in enumerate(lams):
+        handles.append(plt.Line2D([], [], color=GRAY, marker=LAM_MARKER[j % len(LAM_MARKER)], linestyle="none"))
+        labels.append(f"λ = {lam:g}")
+    axes[0].legend(handles, labels, fontsize=7)
     fig.tight_layout()
     fig.savefig(out / "pareto.png")
     plt.close(fig)
@@ -137,6 +158,7 @@ def main() -> None:
     ap.add_argument("--root", type=Path, default=Path("results/phase2"))
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--color-by", choices=["arm", "lam"], default="arm")
+    ap.add_argument("--base-eval", type=Path, default=None, help="summary.json of the original model")
     args = ap.parse_args()
     setup_style()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -145,7 +167,8 @@ def main() -> None:
     base = {k: float(base_metrics[f"probe/{k}"]) for k, _ in PARETO_Y}
     fig_curves(runs, args.out, args.color_by)
     table = pd.DataFrame([final_row(r) for _, r in runs.iterrows()])
-    fig_pareto(table, base, args.out)
+    base_eval = json.loads(args.base_eval.read_text()) if args.base_eval else None
+    fig_pareto(table, base_eval, args.out)
     print("original (step-0 probe):", {k: round(v, 3) for k, v in base.items()})
     print(md(table))
     (args.out / "table.md").write_text(md(table) + "\n")
