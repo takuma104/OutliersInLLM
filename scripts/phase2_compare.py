@@ -66,7 +66,7 @@ def fig_curves(runs: pd.DataFrame, out: Path, color_by: str) -> None:
     styles = sorted(runs["lam" if color_by == "arm" else "arm"].unique(), key=str)
     fig, axes = plt.subplots(1, len(CURVES), figsize=(3.3 * len(CURVES), 3.1))
     for r in runs.itertuples():
-        c = C[keys.index(getattr(r, color_by)) % len(C)]
+        c = arm_color(r.arm, keys.index(r.arm)) if color_by == "arm" else C[keys.index(r.lam) % len(C)]
         ls = LINESTYLES[styles.index(r.lam if color_by == "arm" else r.arm) % len(LINESTYLES)]
         for ax, (k, label, logy) in zip(axes, CURVES):
             s = r.metrics[["step", k]].dropna()
@@ -107,7 +107,12 @@ EVAL_Y = [("eval p50", "outlier/peak_p50_median", "peak |u| p50 (median over rea
           ("eval M2", "outlier/sink_score_median", "residual sink score M2 (median)"),
           ("A4-INT@gate_up", "rtn/A4-INT@gate_up", "ΔPPL, INT4 per-token acts on gate_up"),
           ("W4A4", "rtn/W4A4", "ΔPPL, W4A4 NVFP4")]
-ARM_COLOR = {"orig": C[2], "GatedNorm": C[0], "bias": C[1]}
+ARM_COLOR = {"orig": C[2], "GatedNorm": C[0], "GA-head+GatedNorm": C[0], "bias": C[1], "GA-head": C[1],
+             "GA-elem+GatedNorm": C[3]}
+
+
+def arm_color(arm: str, fallback_index: int) -> str:
+    return ARM_COLOR.get(arm, C[(fallback_index + 4) % len(C)])
 LAM_MARKER = ["o", "s", "^", "D"]
 
 
@@ -123,7 +128,7 @@ def fig_pareto(table: pd.DataFrame, base_eval: dict[str, float] | None, out: Pat
             ax.scatter([0], [base_eval[base_key]], color=GRAY, marker="*", s=90, zorder=3, label="original")
         for i, arm in enumerate(sorted(t.arm.unique())):
             sub = t[t.arm == arm].sort_values("λ")
-            color = ARM_COLOR.get(arm, C[(i + 3) % len(C)])
+            color = arm_color(arm, i)
             ax.plot(sub["eval KL"], sub[col], color=color, linewidth=1.2, label=arm)
             for _, row in sub.iterrows():
                 ax.scatter(row["eval KL"], row[col], color=color, s=36, zorder=3,
@@ -132,6 +137,8 @@ def fig_pareto(table: pd.DataFrame, base_eval: dict[str, float] | None, out: Pat
         ax.set_xlabel("held-out KL(orig ‖ θ)")
         ax.set_title(label)
         if col.startswith(("A4", "W4")):
+            if col.startswith("A4"):
+                ax.set_yscale("log")
             ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
     handles, labels = axes[0].get_legend_handles_labels()
     for j, lam in enumerate(lams):
