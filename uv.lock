@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "cat-q-reproduction",
+    "outliersinllm",
+]
+
 [[package]]
 name = "absl-py"
 version = "2.5.0"
@@ -178,6 +184,35 @@ sdist = { url = "https://files.pythonhosted.org/packages/9a/8e/82a0fe20a541c0314
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309", size = 67548, upload-time = "2026-03-19T14:22:23.645Z" },
 ]
+
+[[package]]
+name = "cat-q-reproduction"
+version = "0.1.0"
+source = { editable = "third_party/CAT-Q-Reproduction" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "datasets" },
+    { name = "lm-eval" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate", specifier = ">=1.14.0" },
+    { name = "datasets", specifier = ">=5.0.0" },
+    { name = "lm-eval", specifier = ">=0.4.12" },
+    { name = "torch", specifier = ">=2.12.1" },
+    { name = "transformers", specifier = ">=5.12.1" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "certifi"
@@ -1718,6 +1753,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
+    { name = "cat-q-reproduction" },
     { name = "datasets" },
     { name = "flash-linear-attention" },
     { name = "lm-eval" },
@@ -1737,6 +1773,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.15.0" },
+    { name = "cat-q-reproduction", editable = "third_party/CAT-Q-Reproduction" },
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "flash-linear-attention", specifier = ">=0.5.2" },
     { name = "lm-eval", specifier = ">=0.4.13" },

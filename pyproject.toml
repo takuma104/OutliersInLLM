@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "accelerate>=1.15.0",
+    "cat-q-reproduction",
     "datasets>=5.0.1",
     "flash-linear-attention>=0.5.2",
     "lm-eval>=0.4.13",
@@ -35,3 +36,11 @@ markers = [
     "gpu: requires CUDA",
     "slow: loads real model weights",
 ]
+
+[tool.uv.workspace]
+members = [
+    "third_party/CAT-Q-Reproduction",
+]
+
+[tool.uv.sources]
+cat-q-reproduction = { workspace = true, editable = true }
