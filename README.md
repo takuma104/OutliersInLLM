@@ -126,6 +126,7 @@ scripts/
   eval_retrofit.py     PPL / KL / outliers / attention sink / RTN / lm-eval for a checkpoint
   phase2_*.py          comparison plots, per-module quantization sensitivity
 tests/                 identity-at-init, fused loss vs full loss, statistics vs NumPy, GPU integration tests
+third_party/           CAT-Q-Reproduction (ternary PTQ, git submodule) for the upcoming PTQ phase
 docs/reports/          full reports with all tables and figures (Japanese)
 docs/plans/            experiment plans, including every mid-course decision and its reason (Japanese)
 ```
@@ -135,6 +136,7 @@ docs/plans/            experiment plans, including every mid-course decision and
 This requires one CUDA GPU; we used an RTX 5090 (32 GB). The environment is managed with [uv](https://github.com/astral-sh/uv).
 
 ```bash
+git submodule update --init third_party/CAT-Q-Reproduction   # CAT-Q (ternary PTQ) workspace member
 uv sync
 uv run pytest                                            # unit + GPU integration tests
 
