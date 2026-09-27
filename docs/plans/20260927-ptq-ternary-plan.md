@@ -1,6 +1,6 @@
 # 実験計画（Phase 3）: 外れ値を後付けで抑えたモデルの PTQ ── 三値化（CAT-Q）を中心に
 
-- 作成: 2026-09-27 / 状態: **承認済み（§9 の決定事項を参照）**
+- 作成: 2026-09-27 / 状態: **P0〜P3 完了（2026-09-28、[Phase 3 レポート](../reports/phase3-ptq.md)）。P4 は未実施（レポート §7.2 の提案を参照）**
 - 前提: [Phase 2 最終レポート](../reports/phase2-final.md)、CAT-Q 再現実装（[CAT-Q-Reproduction](https://github.com/takuma104/CAT-Q-Reproduction)、submodule `third_party/CAT-Q-Reproduction`）、[CAT-Q 論文（arXiv 2606.26650）](https://arxiv.org/abs/2606.26650)
 - 元計画の G2 以降（「A2 がパレート優位なら PTQ フェーズへ」）に当たる
 

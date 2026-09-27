@@ -83,6 +83,33 @@ Two pitfalls showed up along the way:
 - A lenient threshold (τ = 8) just moves the sink to another dimension, just under the threshold.
 - Penalizing only the norm *input* lets GatedNorm rebuild the sink with its gate. This looks great on the loss but makes the quantized activations worse. We therefore penalize both the input and the output of each norm.
 
+## Post-training quantization of the retrofitted model (Phase 3)
+
+We quantized the decoder Linears (group size 128) of three Qwen3-0.6B-Base variants:
+- **M0**: the original model.
+- **M1**: outliers regularized away, original architecture.
+- **M3**: GA + GatedNorm retrofit.
+
+C4-validation PPL (64 documents; FP: M0 18.18, M1 19.15, M3 18.63):
+
+| Weight quantizer | M0 | M1 | M3 | M3 / M0 (95% CI, paired over documents) |
+|---|---|---|---|---|
+| RTN ternary | 6.0M | 2.8M | 0.54M | (all collapse) |
+| GPTQ ternary | 690 | 826 | **259** | **0.376** [0.325, 0.426] |
+| [CAT-Q](https://github.com/takuma104/CAT-Q-Reproduction) ternary (W1.58A16) | 39.10 | 37.61 | **36.37** | **0.930** [0.923, 0.936] (2 seeds) |
+| GPTQ INT4 | 22.18 | 22.07 | **20.32** | 0.916 [0.909, 0.923] |
+
+- **The weaker the quantizer, the more the retrofit helps.**
+  - Under GPTQ ternary, the original model's super weight (L2 `down_proj`, 24σ) is clipped to the group scale. The massive activation then collapses (7200 → 1176).
+  - Keeping the 505 largest weights in bf16 only partly fixes this: 690 → 513, still 2× behind M3.
+  - In M3 the super weight is still there, but dormant: its input drops from 3456 to 48.
+  - CAT-Q learns to keep the massive activation intact by itself, and the gap shrinks to 7%. That 7% gap reproduces across seeds, with 0.2–0.4% seed-to-seed spread.
+- **With CAT-Q, removing the outliers matters, not the gates.** M1 and M3 degrade equally relative to their own FP models; M3 wins in absolute terms because its FP model is better. The gates make the difference under GPTQ (M3/M1 = 0.31).
+- **Low-bit activations are where the difference is large.** After CAT-Q ternary, per-token INT4 activations:
+  - M0 collapses (+2×10⁶%).
+  - M3 degrades by +1633%. This is still far from usable; the remaining bottleneck is the late `down_proj` inputs.
+- **Gates are not a better recovery knob than LoRA.** We froze the ternary weights and distilled only the gates and norms (2.39M parameters). This recovered 30% of M3's degradation. A LoRA with a matched parameter count on M0 recovered 42%. Most of the recovery comes from the RMSNorm weights alone (66K parameters, 19–23%).
+
 ## Method
 
 - **Identity-initialized retrofits**: at initialization the model's logits are bit-identical to the original's (unit-tested).
@@ -104,8 +131,8 @@ Two pitfalls showed up along the way:
 
 ## Caveats
 
-- **Scale**: single seed, 200M fine-tuning tokens, and 0.6B/0.8B models.
-- **Quantization**: RTN fake quantization only. No GPTQ, SmoothQuant or rotation-based PTQ has been applied yet.
+- **Scale**: single fine-tuning seed, 200M fine-tuning tokens, and 0.6B/0.8B models. At 0.6B, ternary models sit close to chance on multiple-choice tasks, so PTQ comparisons rely on PPL and KL.
+- **Quantization**: weight PTQ covers RTN, GPTQ and CAT-Q (ternary) plus GPTQ INT4; activations are RTN fake-quantized after the fact. No SmoothQuant, rotation-based PTQ or activation-aware reconstruction yet, and no real low-bit kernels (all fake quantization).
 - **Zero-shot**: ARC-Easy rises by 5–7 points in *every* fine-tuned run, which is likely an effect of the FineWeb-Edu data. On the other five tasks every run is slightly below the original. GA + GatedNorm (λ = 3e-3) loses the least: −0.7 points, vs −1.6 for the original architecture.
 - **Latency**: our retrofit is implemented with unfused PyTorch hooks. Batch-1 overhead is +7.6% for prefill and +34% for decode with GA + GatedNorm, mostly from kernel launches.
 
@@ -119,14 +146,21 @@ src/outliers/          library
   retrofit.py          identity-initialized GatedNorm / attention output gate / zero bias, save & load
   losses.py            fused chunked lm_head KL / CE, outlier regularizer
   evaluate.py          chunked NLL, PPL / bits-per-byte
+  training.py          token stream and LR schedule shared by the training loops
+  ptq.py               ternary / INT4 RTN and GPTQ, CAT-Q adapter for retrofitted models, LoRA control
 scripts/
   phase1_*.py          outlier measurement, ablations, quantization probes, plots
   prepare_fineweb.py   packed training data
   train_retrofit.py    KL + λR fine-tuning with probes (JSONL + wandb)
   eval_retrofit.py     PPL / KL / outliers / attention sink / RTN / lm-eval for a checkpoint
   phase2_*.py          comparison plots, per-module quantization sensitivity
+  ptq_quantize.py      weight PTQ (RTN / GPTQ / CAT-Q) of an original or retrofitted model
+  ptq_diagnose.py      per-layer error vs the model's own FP (pre/post-norm, massive activation, top-1)
+  ptq_recover.py       recovery distillation of a quantized model (gates / norms / LoRA)
+  ptq_docnll.py        per-document NLL for paired bootstrap comparisons
+  phase3_summary.py    Phase 3 tables and figures
 tests/                 identity-at-init, fused loss vs full loss, statistics vs NumPy, GPU integration tests
-third_party/           CAT-Q-Reproduction (ternary PTQ, git submodule) for the upcoming PTQ phase
+third_party/           CAT-Q-Reproduction (ternary PTQ, git submodule, uv workspace member)
 docs/reports/          full reports with all tables and figures (Japanese)
 docs/plans/            experiment plans, including every mid-course decision and its reason (Japanese)
 ```
@@ -152,6 +186,14 @@ for d in results/phase2/c2/*/; do uv run python scripts/eval_retrofit.py --ckpt 
 
 uv run python scripts/phase2_compare.py --pattern "c2/*" --out figs \
   --base-eval results/phase2/base-qwen3-0.6b/eval/summary.json
+
+# Phase 3: ternary PTQ of the original model and of the retrofitted one, then evaluation
+uv run python scripts/ptq_quantize.py --model qwen3-0.6b --method catq --name M0-catq
+uv run python scripts/ptq_quantize.py --model results/phase2/c2/B3h-lam3e-3/final.pt --method catq --name M3-catq
+for n in M0-catq M3-catq; do
+  uv run python scripts/eval_retrofit.py --ckpt results/phase3/$n/quantized.pt --rtn-schemes A8 A4 A4-INT --no-rtn-per-kind --attention
+  uv run python scripts/ptq_diagnose.py --ckpt results/phase3/$n/quantized.pt
+done
 ```
 
 The complete command lists for every experiment are at the end of each report.
@@ -161,6 +203,7 @@ The complete command lists for every experiment are at the end of each report.
 - [Phase 1: outlier analysis of Qwen3.5-0.8B-Base and Qwen3-0.6B-Base](docs/reports/phase1-outliers.md)
 - [Phase 2, stage C1: GatedNorm / bias retrofit on Qwen3.5](docs/reports/phase2-c1.md)
 - [Phase 2 final report: GA + GatedNorm retrofit on Qwen3](docs/reports/phase2-final.md)
+- [Phase 3: post-training (ternary) quantization of the retrofitted model](docs/reports/phase3-ptq.md)
 
 ## References
 
