@@ -37,8 +37,10 @@ def test_identity_at_init_and_roundtrip(name: str, cfg: RetrofitConfig, tmp_path
     ids = _ids(tok)
     with torch.no_grad():
         ref = model(input_ids=ids).logits
+    n_keys = len(model.state_dict())
     new = apply_retrofit(model, cfg)
     assert new, "retrofit created no parameters"
+    assert len(model.state_dict()) == n_keys + len(new), "retrofit must add exactly its new parameters"
     with torch.no_grad():
         out = model(input_ids=ids).logits
     assert torch.equal(ref, out), "retrofit is not an exact identity at init"

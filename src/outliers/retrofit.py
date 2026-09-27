@@ -148,7 +148,8 @@ def _register_gate_apply(attn: nn.Module) -> None:
         return (args[0] * g.to(args[0].dtype),) + args[1:]
 
     attn._gate_apply_handle = attn.o_proj.register_forward_pre_hook(apply)
-    attn._gate_apply_target = attn.o_proj
+    # a plain attribute, not a registered submodule (which would add o_proj to the state_dict a second time)
+    object.__setattr__(attn, "_gate_apply_target", attn.o_proj)
 
 
 def reattach_attn_gate_hooks(model: nn.Module) -> int:
