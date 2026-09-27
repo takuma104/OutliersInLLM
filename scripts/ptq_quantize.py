@@ -51,6 +51,8 @@ def main() -> None:
     ap.add_argument("--group-size", type=int, default=128)
     ap.add_argument("--epochs", type=int, default=60, help="CAT-Q epochs")
     ap.add_argument("--catq-mode", choices=["ternary", "binary"], default="ternary")
+    ap.add_argument("--keep-sigma", type=float, default=None,
+                    help="RTN/GPTQ: keep weights with |w| > k·std(W) in bf16 (sparse super-weight control)")
     ap.add_argument("--out-root", type=Path, default=Path("results/phase3"))
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -72,7 +74,10 @@ def main() -> None:
         bits = 1.58 if args.catq_mode == "ternary" else 1.0
     else:
         method, grid = args.method.split("-")
-        stats = {"layer_stats": quantize_model_sequential(model, calib, grid, method, args.group_size)}
+        layer_stats = quantize_model_sequential(model, calib, grid, method, args.group_size,
+                                                keep_sigma=args.keep_sigma)
+        stats = {"layer_stats": layer_stats, "keep_sigma": args.keep_sigma,
+                 "n_kept": sum(v for k, v in layer_stats.items() if k.endswith("n_kept"))}
         bits = 1.58 if grid == "ternary" else 4.0
     elapsed = time.time() - t0
     stats |= {"method": args.method, "source": args.model, "calib_samples": n_calib, "elapsed_sec": elapsed,

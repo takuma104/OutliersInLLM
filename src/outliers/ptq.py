@@ -38,10 +38,14 @@ def _check_supported(model: nn.Module) -> None:
 # --- grids ----------------------------------------------------------------------------------------------------------
 
 
-def ternary_params(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """TWN (Li et al., 2016) per row of ``w`` [R, G]: threshold Δ = 0.7·mean|w|, scale α = mean of |w| above Δ."""
-    a = w.abs()
-    delta = 0.7 * a.mean(-1, keepdim=True)
+def ternary_params(w: torch.Tensor, keep: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """TWN (Li et al., 2016) per row of ``w`` [R, G]: threshold Δ = 0.7·mean|w|, scale α = mean of |w| above Δ.
+
+    Entries in ``keep`` (kept in full precision) are left out of both statistics.
+    """
+    a = w.abs() if keep is None else w.abs() * ~keep
+    n = torch.full_like(a[..., :1], a.shape[-1]) if keep is None else (~keep).sum(-1, keepdim=True).clamp_min(1)
+    delta = 0.7 * a.sum(-1, keepdim=True) / n
     mask = a > delta
     alpha = (a * mask).sum(-1, keepdim=True) / mask.sum(-1, keepdim=True).clamp_min(1)
     return delta, alpha
@@ -51,9 +55,10 @@ def ternary_round(w: torch.Tensor, delta: torch.Tensor, alpha: torch.Tensor) -> 
     return alpha * torch.sign(w) * (w.abs() > delta)
 
 
-def int_params(w: torch.Tensor, bits: int = 4) -> torch.Tensor:
+def int_params(w: torch.Tensor, bits: int = 4, keep: torch.Tensor | None = None) -> torch.Tensor:
     qmax = 2 ** (bits - 1) - 1
-    scale = w.abs().amax(-1, keepdim=True) / qmax
+    a = w.abs() if keep is None else w.abs() * ~keep
+    scale = a.amax(-1, keepdim=True) / qmax
     return torch.where(scale > 0, scale, torch.ones_like(scale))
 
 
@@ -62,16 +67,30 @@ def int_round(w: torch.Tensor, scale: torch.Tensor, bits: int = 4) -> torch.Tens
     return torch.clamp(torch.round(w / scale), -qmax, qmax) * scale
 
 
-def rtn_quantize(w: torch.Tensor, grid: Grid, group_size: int = 128) -> torch.Tensor:
-    """Round-to-nearest on ``grid`` with per-(row, group) parameters; returns the input dtype."""
+def rtn_quantize(w: torch.Tensor, grid: Grid, group_size: int = 128, keep: torch.Tensor | None = None) -> torch.Tensor:
+    """Round-to-nearest on ``grid`` with per-(row, group) parameters; returns the input dtype.
+
+    ``keep`` (bool, like ``w``) marks weights left in full precision and excluded from the grid fit.
+    """
     wf = w.float()
     g = wf.reshape(wf.shape[0], -1, group_size)
+    k = None if keep is None else keep.reshape(g.shape)
     if grid == "ternary":
-        delta, alpha = ternary_params(g)
+        delta, alpha = ternary_params(g, k)
         q = ternary_round(g, delta, alpha)
     else:
-        q = int_round(g, int_params(g))
+        q = int_round(g, int_params(g, keep=k))
+    if k is not None:
+        q = torch.where(k, g, q)
     return q.reshape(w.shape).to(w.dtype)
+
+
+def outlier_mask(w: torch.Tensor, sigma: float | None) -> torch.Tensor | None:
+    """Weights with |w| > sigma·std(w) (super-weight-style outliers), or None."""
+    if sigma is None:
+        return None
+    wf = w.float()
+    return wf.abs() > sigma * wf.std()
 
 
 # --- GPTQ -----------------------------------------------------------------------------------------------------------
@@ -79,11 +98,12 @@ def rtn_quantize(w: torch.Tensor, grid: Grid, group_size: int = 128) -> torch.Te
 
 @torch.no_grad()
 def gptq_quantize(w: torch.Tensor, hessian: torch.Tensor, grid: Grid, group_size: int = 128,
-                  percdamp: float = 0.01) -> torch.Tensor:
+                  percdamp: float = 0.01, keep: torch.Tensor | None = None) -> torch.Tensor:
     """GPTQ (Frantar et al., 2023) with the block size equal to the group size.
 
     Grid parameters of each group are fitted on the (error-updated) weights when the group is reached.
-    ``hessian`` is E[x xᵀ] over calibration inputs of this Linear ([in, in]).
+    ``hessian`` is E[x xᵀ] over calibration inputs of this Linear ([in, in]). Weights in ``keep`` stay at their
+    (error-updated) full-precision value, so they contribute no error of their own.
     """
     W = w.float().clone()
     H = hessian.float().clone()
@@ -100,15 +120,16 @@ def gptq_quantize(w: torch.Tensor, hessian: torch.Tensor, grid: Grid, group_size
         Q1 = torch.zeros_like(W1)
         Err1 = torch.zeros_like(W1)
         Hinv1 = Hinv[i1:i2, i1:i2]
+        K1 = None if keep is None else keep[:, i1:i2]
         if grid == "ternary":
-            delta, alpha = ternary_params(W1)
+            delta, alpha = ternary_params(W1, K1)
             rnd: Callable[[torch.Tensor], torch.Tensor] = lambda x: ternary_round(x, delta[:, 0], alpha[:, 0])
         else:
-            scale = int_params(W1)
+            scale = int_params(W1, keep=K1)
             rnd = lambda x: int_round(x, scale[:, 0])
         for i in range(i2 - i1):
             col = W1[:, i]
-            q = rnd(col)
+            q = rnd(col) if K1 is None else torch.where(K1[:, i], col, rnd(col))
             Q1[:, i] = q
             err = (col - q) / Hinv1[i, i]
             W1[:, i:] -= err.unsqueeze(1) @ Hinv1[i, i:].unsqueeze(0)
@@ -129,11 +150,12 @@ def _layer_inputs(model: PreTrainedModel, input_ids: torch.Tensor, batch: int) -
 
 @torch.no_grad()
 def quantize_model_sequential(model: PreTrainedModel, input_ids: torch.Tensor, grid: Grid, method: str,
-                              group_size: int = 128, batch: int = 4) -> dict[str, float]:
+                              group_size: int = 128, batch: int = 4, keep_sigma: float | None = None) -> dict[str, float]:
     """Layer-by-layer weight quantization with the quantized-model stream as input (RTN ignores the data).
 
     For GPTQ, each Linear's Hessian is collected from the current layer's inputs (previous layers already
     quantized); all Linears of a layer use one forward pass with that layer still in full precision.
+    ``keep_sigma``: weights with |w| > keep_sigma·std(W) stay in full precision (sparse outlier control).
     """
     _check_supported(model)
     hidden, pos = _layer_inputs(model, input_ids, batch)
@@ -159,11 +181,14 @@ def quantize_model_sequential(model: PreTrainedModel, input_ids: torch.Tensor, g
                 h.remove()
         for name, lin in linears.items():
             w = lin.weight.data
+            keep = outlier_mask(w, keep_sigma)
             if method == "gptq":
-                q = gptq_quantize(w, hess[name] / count[name], grid, group_size)
+                q = gptq_quantize(w, hess[name] / count[name], grid, group_size, keep=keep)
             else:
-                q = rtn_quantize(w, grid, group_size)
+                q = rtn_quantize(w, grid, group_size, keep=keep)
             stats[f"layer{li}.{name}.rel_err"] = float((q.float() - w.float()).norm() / w.float().norm())
+            if keep is not None:
+                stats[f"layer{li}.{name}.n_kept"] = int(keep.sum())
             if grid == "ternary":
                 stats[f"layer{li}.{name}.zero_fraction"] = float((q == 0).float().mean())
             lin.weight.data.copy_(q)

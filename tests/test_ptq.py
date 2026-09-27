@@ -6,7 +6,7 @@ from catq.config import CATQConfig
 from torch import nn
 
 from outliers.models import load_model
-from outliers.ptq import RetrofitCATQ, gptq_quantize, rtn_quantize, target_linears, ternary_params
+from outliers.ptq import RetrofitCATQ, gptq_quantize, outlier_mask, rtn_quantize, target_linears, ternary_params
 from outliers.retrofit import RetrofitConfig, apply_retrofit
 
 
@@ -115,3 +115,22 @@ def test_lora_adapters_identity_then_merge() -> None:
     assert not torch.allclose(adapted, ref)
     lora.merge()
     assert torch.allclose(run(x), adapted, atol=1e-5)
+
+
+@pytest.mark.parametrize("grid", ["ternary", "int4"])
+def test_kept_outliers_are_exact_and_excluded_from_the_fit(grid: str) -> None:
+    torch.manual_seed(0)
+    w = torch.randn(8, 256)
+    spiked = w.clone()
+    spiked[3, 10] = 40.0  # a super weight
+    keep = outlier_mask(spiked, 10.0)
+    assert keep.sum() == 1 and keep[3, 10]
+    q = rtn_quantize(spiked, grid, group_size=128, keep=keep)
+    assert q[3, 10] == 40.0
+    # the rest of the group is quantized as if the outlier were not there (it no longer sets Δ/α or the scale)
+    rest = torch.cat([spiked[3:4, :10], spiked[3:4, 11:128]], dim=1)  # the other 127 weights of the group
+    ref = rtn_quantize(rest, grid, group_size=127)
+    assert torch.allclose(torch.cat([q[3, :10], q[3, 11:128]]), ref[0], atol=1e-6)
+    x = torch.randn(1024, 256)
+    qg = gptq_quantize(spiked, x.T @ x / 1024, grid, group_size=128, keep=keep)
+    assert qg[3, 10] != 0 and (qg[3, 10] - 40.0).abs() < 5.0  # full precision (error-updated), not clipped to α
