@@ -51,6 +51,8 @@ def main() -> None:
     ap.add_argument("--group-size", type=int, default=128)
     ap.add_argument("--epochs", type=int, default=60, help="CAT-Q epochs")
     ap.add_argument("--catq-mode", choices=["ternary", "binary"], default="ternary")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="CAT-Q batch order + global RNG (LoRA init); default: CAT-Q seed 0, global RNG untouched")
     ap.add_argument("--keep-sigma", type=float, default=None,
                     help="RTN/GPTQ: keep weights with |w| > k·std(W) in bf16 (sparse super-weight control)")
     ap.add_argument("--out-root", type=Path, default=Path("results/phase3"))
@@ -64,10 +66,12 @@ def main() -> None:
     calib = build_calibration_data(tok, num_samples=512, seq_len=2048, seed=0, dataset_name="allenai/c4",
                                    dataset_config="en", cache_path=CALIB)[:n_calib]
     t0 = time.time()
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
     if args.method == "catq":
         config = CATQConfig(model_name=str(args.model), output_dir=str(out), num_calib_samples=n_calib,
                             epochs=args.epochs, group_size=args.group_size, quant_mode=args.catq_mode,
-                            target_suffixes=TARGET_SUFFIXES)
+                            target_suffixes=TARGET_SUFFIXES, seed=args.seed or 0)
         result = quantize_catq(model, calib, config)
         stats: dict = {"catq_config": dataclasses.asdict(config), "layer_stats": result.layer_stats,
                        "windows": [dataclasses.asdict(w) for w in result.windows]}

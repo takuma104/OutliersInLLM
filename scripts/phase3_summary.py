@@ -17,6 +17,11 @@ MODELS = ("M0", "M1", "M3")
 MODEL_LABEL = {"M0": "M0 original", "M1": "M1 original arch. (B1)", "M3": "M3 GA+GatedNorm (B3h)"}
 MODEL_COLOR = {"M0": "#6b7280", "M1": "#d97706", "M3": "#2563eb"}
 METHODS = ("rtn-ternary", "gptq-ternary", "catq", "gptq-int4")
+# FP lm-eval references come from the Phase 2 evaluations of the same checkpoints
+PHASE2_EVAL = {"M0": Path("results/phase2/base-qwen3-0.6b/eval"), "M1": Path("results/phase2/c2/B1-lam3e-3/eval"),
+               "M3": Path("results/phase2/c2/B3h-lam3e-3/eval")}
+# CAT-Q paper protocol: PIQA / ARC-e / ARC-c / HellaSwag acc_norm, WinoGrande acc
+PAPER5 = ("piqa/acc_norm", "arc_easy/acc_norm", "arc_challenge/acc_norm", "hellaswag/acc_norm", "winogrande/acc")
 
 
 def _json(path: Path) -> dict | None:
@@ -33,6 +38,8 @@ def collect() -> pd.DataFrame:
             if s is None:
                 continue
             dg = _json(d / "diagnose/summary.json") or {}
+            lm = _json(PHASE2_EVAL[m] / "summary.json") if method == "fp" else s
+            paper5 = [lm.get(f"lmeval/{k}") for k in PAPER5] if lm else []
             rows.append({
                 "model": m, "method": method,
                 "wt2": s["wikitext2/ppl"], "c4val8": s["c4val8/ppl"], "c4val64": s["c4val64/ppl"],
@@ -43,7 +50,9 @@ def collect() -> pd.DataFrame:
                 "top1": dg.get("top1_agree"), "top1_first": dg.get("top1_agree_first"),
                 "err_last": dg.get("last/pre_rest"), "err_last_first": dg.get("last/pre_first"),
                 "ma_ratio_min": dg.get("min/ma_amp_ratio"),
-                "lm_eval": s.get("lm_eval/mean"),
+                "avg5": sum(paper5) / 5 if paper5 and None not in paper5 else None,
+                "lambada": lm.get("lmeval/lambada_openai/acc") if lm else None,
+                **{k: lm.get(f"lmeval/{k}") if lm else None for k in PAPER5},
             })
     return pd.DataFrame(rows)
 
@@ -69,6 +78,15 @@ def table_act(df: pd.DataFrame) -> str:
     for method in ("fp", *METHODS):
         for _, r in df[df.method == method].iterrows():
             lines.append(f"| {method} | {r.model} | {r.A8:+.1%} | {r.A4:+.1%} | {r['A4-INT']:+.0%} |")
+    return "\n".join(lines)
+
+
+def table_lmeval(df: pd.DataFrame) -> str:
+    lines = ["| 方式 | モデル | PIQA | ARC-e | ARC-c | HellaSwag | WinoGrande | **5 タスク平均** | LAMBADA |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    for _, r in df[df.avg5.notna()].iterrows():
+        cells = " | ".join(f"{100 * r[k]:.1f}" for k in PAPER5)
+        lines.append(f"| {r.method} | {r.model} | {cells} | **{100 * r.avg5:.1f}** | {100 * r.lambada:.1f} |")
     return "\n".join(lines)
 
 
@@ -128,6 +146,7 @@ def main() -> None:
     df.to_csv(FIGS / "summary.csv", index=False)
     print(table_main(df), "\n")
     print(table_act(df), "\n")
+    print(table_lmeval(df), "\n")
     fig_ratio(df)
     for method in METHODS:
         fig_layers(method)
