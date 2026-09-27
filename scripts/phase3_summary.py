@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 ROOT = Path("results/phase3")
@@ -90,23 +91,68 @@ def table_lmeval(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def fig_ratio(df: pd.DataFrame) -> None:
-    methods = [m for m in METHODS if m in set(df.method)]
-    fig, ax = plt.subplots(figsize=(7, 3.6))
+def doc_nll(run: str) -> np.ndarray | None:
+    p = ROOT / run / "eval/c4val64_doc_nll.npy"
+    return np.load(p) if p.exists() else None
+
+
+BOOT = np.random.default_rng(0).integers(0, 64, size=(10000, 64))
+
+
+def boot_ci(diff: np.ndarray) -> tuple[float, float, float]:
+    """exp(mean per-document NLL difference) with a paired 95% bootstrap interval over the 64 documents."""
+    x = np.exp(diff[BOOT].mean(1))
+    return float(np.exp(diff.mean())), float(np.percentile(x, 2.5)), float(np.percentile(x, 97.5))
+
+
+def table_pairs(methods: tuple[str, ...] = ("gptq-ternary", "catq", "gptq-int4")) -> str:
+    lines = ["| 方式 | 比較 | C4-val64 PPL の比 [95% 区間] | 自分の FP に対する劣化の比 [95% 区間] |", "|---|---|---|---|"]
+    for method in methods:
+        for a, b in (("M3", "M0"), ("M1", "M0"), ("M3", "M1")):
+            qa, qb, fa, fb = doc_nll(f"{a}-{method}"), doc_nll(f"{b}-{method}"), doc_nll(f"fp-{a}"), doc_nll(f"fp-{b}")
+            if qa is None or qb is None or fa is None or fb is None:
+                continue
+            r = boot_ci(qa - qb)
+            rel = boot_ci((qa - fa) - (qb - fb))
+            lines.append(f"| {method} | {a} / {b} | {r[0]:.3f} [{r[1]:.3f}, {r[2]:.3f}] "
+                         f"| {rel[0]:.3f} [{rel[1]:.3f}, {rel[2]:.3f}] |")
+    return "\n".join(lines)
+
+
+def _bars(ax: plt.Axes, df: pd.DataFrame, methods: list[str], excess: bool) -> None:
     w = 0.26
     for i, m in enumerate(MODELS):
         sub = df[df.model == m].set_index("method")
-        xs = [j + (i - 1) * w for j in range(len(methods))]
-        ys = [sub.c4val64_x_fp.get(meth, float("nan")) for meth in methods]
-        ax.bar(xs, ys, width=w - 0.02, color=MODEL_COLOR[m], label=MODEL_LABEL[m])
-    ax.set_yscale("log")
+        for j, meth in enumerate(methods):
+            if meth not in sub.index:
+                continue
+            x = j + (i - 1) * w
+            y = sub.c4val64_x_fp[meth] - (1 if excess else 0)
+            ax.bar(x, y, width=w - 0.03, color=MODEL_COLOR[m], label=MODEL_LABEL[m] if j == 0 else None)
+            q, f = doc_nll(f"{m}-{meth}"), doc_nll(f"fp-{m}")
+            if excess and q is not None and f is not None:
+                _, lo, hi = boot_ci(q - f)
+                ax.errorbar(x, y, yerr=[[y - (lo - 1)], [(hi - 1) - y]], color="#111827", lw=1, capsize=2)
+                ax.text(x, hi - 1, f"{y:.2f}", ha="center", va="bottom", fontsize=7, color="#374151")
     ax.set_xticks(range(len(methods)), methods)
-    ax.set_ylabel("C4-val64 PPL / own FP PPL")
-    ax.axhline(1, color="#9ca3af", lw=0.8)
     ax.grid(axis="y", color="#e5e7eb", lw=0.6)
     ax.set_axisbelow(True)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(frameon=False, fontsize=8)
+
+
+def fig_ratio(df: pd.DataFrame) -> None:
+    present = set(df.method)
+    tern = [m for m in ("rtn-ternary", "gptq-ternary") if m in present]
+    mild = [m for m in ("catq", "gptq-int4") if m in present]
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(10, 3.6), gridspec_kw={"width_ratios": [1, 1]})
+    _bars(a1, df, tern, excess=False)
+    a1.set_yscale("log")
+    a1.set_ylabel("C4-val64 PPL / own FP PPL")
+    a1.set_title("(a) cheap ternary quantizers (log scale)", fontsize=9)
+    a1.legend(frameon=False, fontsize=7)
+    _bars(a2, df, mild, excess=True)
+    a2.set_ylabel("C4-val64 PPL / own FP PPL − 1")
+    a2.set_title("(b) CAT-Q ternary and GPTQ INT4 (95% CI over documents)", fontsize=9)
     fig.tight_layout()
     fig.savefig(FIGS / "ppl_ratio.png", dpi=150)
     plt.close(fig)
@@ -140,6 +186,55 @@ def fig_layers(method: str) -> None:
     plt.close(fig)
 
 
+RECOVER = ROOT / "recover"
+ARMS = (("M3-catq", "gates"), ("M3-catq", "norms"), ("M0-catq", "norms"), ("M0-catq", "lora"))
+ARM_LABEL = {"gates": "gates + norms", "norms": "norms only", "lora": "LoRA r=4 + norms"}
+
+
+def table_recover() -> str:
+    lines = ["| 元の三値モデル | 学習するもの | パラメータ数 | LR | held-out KL（前 → 後） | C4-val64 PPL（前 → 後） "
+             "| 回復率 | 5 タスク平均 | LAMBADA |", "|---|---|---|---|---|---|---|---|---|"]
+    for src, train in ARMS:
+        run = RECOVER / f"{src}-{train}"
+        s, cfg = _json(run / "eval/summary.json"), _json(run / "config.json")
+        q, fp = _json(ROOT / src / "eval/summary.json"), _json(ROOT / f"fp-{src[:2]}/eval/summary.json")
+        if s is None or cfg is None:
+            continue
+        rec = (q["c4val64/ppl"] - s["c4val64/ppl"]) / (q["c4val64/ppl"] - fp["c4val64/ppl"])
+        avg5 = sum(s[f"lmeval/{k}"] for k in PAPER5) / 5
+        lines.append(f"| {src} | {ARM_LABEL[train]} | {cfg['n_train_params'] / 1e6:.2f}M | {cfg['lr']:g} "
+                     f"| {q['heldout/kl']:.3f} → {s['heldout/kl']:.3f} | {q['c4val64/ppl']:.2f} → {s['c4val64/ppl']:.2f} "
+                     f"| {rec:.0%} | {100 * avg5:.1f} | {100 * s['lmeval/lambada_openai/acc']:.1f} |")
+    return "\n".join(lines)
+
+
+def fig_recover() -> None:
+    fig, ax = plt.subplots(figsize=(6, 3.4))
+    styles = {"gates": "-", "norms": "--", "lora": ":"}
+    drawn = False
+    for src, train in ARMS:
+        p = RECOVER / f"{src}-{train}/metrics.jsonl"
+        if not p.exists():
+            continue
+        cfg = _json(RECOVER / f"{src}-{train}/config.json")
+        rows = [json.loads(line) for line in p.read_text().splitlines()]
+        pts = [(r["step"] * cfg["global_batch"] * cfg["seq_len"] / 1e6, r["heldout/kl"]) for r in rows if "heldout/kl" in r]
+        ax.plot(*zip(*pts, strict=True), styles[train], color=MODEL_COLOR[src[:2]], lw=2,
+                label=f"{src[:2]}: {ARM_LABEL[train]}")
+        drawn = True
+    if not drawn:
+        plt.close(fig)
+        return
+    ax.set_xlabel("training tokens (M)")
+    ax.set_ylabel("held-out KL to M0 FP")
+    ax.grid(color="#e5e7eb", lw=0.6)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(FIGS / "recover_kl.png", dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     FIGS.mkdir(parents=True, exist_ok=True)
     df = collect()
@@ -147,6 +242,9 @@ def main() -> None:
     print(table_main(df), "\n")
     print(table_act(df), "\n")
     print(table_lmeval(df), "\n")
+    print(table_pairs(), "\n")
+    print(table_recover(), "\n")
+    fig_recover()
     fig_ratio(df)
     for method in METHODS:
         fig_layers(method)
