@@ -208,6 +208,20 @@ def table_recover() -> str:
     return "\n".join(lines)
 
 
+def table_recover_pairs() -> str:
+    pairs = (("recover/M3-catq-gates", "recover/M0-catq-lora"), ("recover/M3-catq-gates", "recover/M3-catq-norms"),
+             ("recover/M0-catq-lora", "recover/M0-catq-norms"), ("recover/M3-catq-norms", "recover/M0-catq-norms"))
+    lines = ["| 比較 | C4-val64 PPL の比 [95% 区間] |", "|---|---|"]
+    for a, b in pairs:
+        qa, qb = doc_nll(a), doc_nll(b)
+        if qa is None or qb is None:
+            continue
+        r = boot_ci(qa - qb)
+        name = lambda x: x.split("/")[1].replace("-catq-", " ")  # noqa: E731
+        lines.append(f"| {name(a)} / {name(b)} | {r[0]:.3f} [{r[1]:.3f}, {r[2]:.3f}] |")
+    return "\n".join(lines)
+
+
 def fig_recover() -> None:
     fig, ax = plt.subplots(figsize=(6, 3.4))
     styles = {"gates": "-", "norms": "--", "lora": ":"}
@@ -244,6 +258,7 @@ def main() -> None:
     print(table_lmeval(df), "\n")
     print(table_pairs(), "\n")
     print(table_recover(), "\n")
+    print(table_recover_pairs(), "\n")
     fig_recover()
     fig_ratio(df)
     for method in METHODS:
