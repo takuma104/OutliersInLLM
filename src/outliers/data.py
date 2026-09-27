@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import random
 from collections.abc import Sequence
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import torch
 from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 from transformers import PreTrainedTokenizerBase
 
 C4_VALIDATION_SHARD = "en/c4-validation.00000-of-00008.json.gz"
@@ -23,8 +25,14 @@ _DELIM_CHARS = frozenset(".,;:!?")
 
 
 def c4_validation_texts() -> list[str]:
-    ds = load_dataset("allenai/c4", data_files={"validation": C4_VALIDATION_SHARD}, split="validation")
-    return list(ds["text"])
+    """Documents of the first C4 validation shard, in file order.
+
+    Read straight from the hub cache: ``load_dataset`` cannot fall back to its cache when the hub is unreachable
+    (the offline config hash differs), while ``hf_hub_download`` returns the cached file.
+    """
+    path = hf_hub_download("allenai/c4", C4_VALIDATION_SHARD, repo_type="dataset")
+    with gzip.open(path, "rt") as f:
+        return [json.loads(line)["text"] for line in f]
 
 
 def c4_validation_windows(tokenizer: PreTrainedTokenizerBase, num_docs: int = 8, seq_len: int = 1024) -> torch.Tensor:
