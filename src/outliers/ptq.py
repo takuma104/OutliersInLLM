@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Literal
 
 import torch
+import torch.nn.functional as F
 from catq.config import CATQConfig
 from catq.slider import RunResult, SlidingWindowQuantizer
 from torch import nn
@@ -196,3 +197,49 @@ class RetrofitCATQ(SlidingWindowQuantizer):
 def quantize_catq(model: PreTrainedModel, input_ids: torch.Tensor, config: CATQConfig) -> RunResult:
     _check_supported(model)
     return RetrofitCATQ(model, config).run(input_ids)
+
+
+# --- recovery (P3) --------------------------------------------------------------------------------------------------
+
+
+class LoRAAdapters(nn.Module):
+    """Unmerged low-rank adapters on the quantized Linears: y = W_q x + B A x (B zero-initialized).
+
+    The P3 control for gate-only recovery at a matched trainable-parameter count. Applied through forward hooks, so
+    the model's state_dict (and the frozen ternary weights) are untouched until :meth:`merge`, which folds B A into
+    the weights (the merged weights are no longer on the quantization grid).
+    """
+
+    def __init__(self, model: PreTrainedModel, rank: int) -> None:
+        super().__init__()
+        self.rank = rank
+        self.a = nn.ParameterDict()
+        self.b = nn.ParameterDict()
+        self._targets: dict[str, nn.Linear] = {}
+        self._handles = []
+        for li, layer in enumerate(decoder_layers(model)):
+            for name, lin in target_linears(layer).items():
+                key = f"{li}.{name}".replace(".", "__")
+                w = lin.weight
+                a = torch.empty(rank, lin.in_features, device=w.device, dtype=torch.float32)
+                nn.init.kaiming_uniform_(a, a=5**0.5)
+                self.a[key] = nn.Parameter(a)
+                self.b[key] = nn.Parameter(torch.zeros(lin.out_features, rank, device=w.device, dtype=torch.float32))
+                self._targets[key] = lin
+                self._handles.append(lin.register_forward_hook(self._hook(key)))
+
+    def _hook(self, key: str) -> Callable[..., torch.Tensor]:
+        def hook(_m: nn.Module, args: tuple[torch.Tensor, ...], out: torch.Tensor) -> torch.Tensor:
+            x = args[0]
+            return out + F.linear(F.linear(x, self.a[key].to(x.dtype)), self.b[key].to(x.dtype))
+
+        return hook
+
+    @torch.no_grad()
+    def merge(self) -> None:
+        for key, lin in self._targets.items():
+            delta = self.b[key].float() @ self.a[key].float()
+            lin.weight.copy_((lin.weight.float() + delta).to(lin.weight.dtype))
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()

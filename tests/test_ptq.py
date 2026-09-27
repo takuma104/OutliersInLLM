@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 from catq.config import CATQConfig
+from torch import nn
 
 from outliers.models import load_model
 from outliers.ptq import RetrofitCATQ, gptq_quantize, rtn_quantize, target_linears, ternary_params
@@ -82,3 +83,35 @@ def test_catq_wrapping_keeps_attention_gate() -> None:
     assert reattach_attn_gate_hooks(model) == 1
     assert layer.self_attn._gate_apply_target is layer.self_attn.o_proj
     assert "self_attn.o_proj" in target_linears(layer)
+
+
+def test_lora_adapters_identity_then_merge() -> None:
+    from outliers.ptq import LoRAAdapters
+
+    class Layer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mlp = nn.Module()
+            self.mlp.up_proj = nn.Linear(16, 32, bias=False)
+            self.mlp.down_proj = nn.Linear(32, 16, bias=False)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.mlp.down_proj(torch.relu(self.mlp.up_proj(x)))
+
+    torch.manual_seed(0)
+    model = nn.Module()
+    model.model = nn.Module()
+    model.model.layers = nn.ModuleList([Layer(), Layer()])
+    run = lambda x: model.model.layers[1](model.model.layers[0](x))  # noqa: E731
+    x = torch.randn(5, 16)
+    ref = run(x)
+    lora = LoRAAdapters(model, rank=2)
+    assert sum(p.numel() for p in lora.parameters()) == 2 * 2 * (16 + 32 + 32 + 16)
+    assert torch.equal(run(x), ref), "B = 0 must leave the model unchanged"
+    with torch.no_grad():
+        for p in lora.b.values():
+            p.normal_()
+    adapted = run(x)
+    assert not torch.allclose(adapted, ref)
+    lora.merge()
+    assert torch.allclose(run(x), adapted, atol=1e-5)
