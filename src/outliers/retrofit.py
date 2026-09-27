@@ -138,12 +138,34 @@ def _register_gate_hooks(attn: nn.Module) -> None:
         x_hat = kwargs["hidden_states"] if "hidden_states" in kwargs else args[0]
         mod._gate_value = mod.out_gate(x_hat)
 
+    attn.register_forward_pre_hook(capture, with_kwargs=True)
+    _register_gate_apply(attn)
+
+
+def _register_gate_apply(attn: nn.Module) -> None:
     def apply(_m: nn.Module, args: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
         g = attn._gate_value
         return (args[0] * g.to(args[0].dtype),) + args[1:]
 
-    attn.register_forward_pre_hook(capture, with_kwargs=True)
-    attn.o_proj.register_forward_pre_hook(apply)
+    attn._gate_apply_handle = attn.o_proj.register_forward_pre_hook(apply)
+    attn._gate_apply_target = attn.o_proj
+
+
+def reattach_attn_gate_hooks(model: nn.Module) -> int:
+    """Re-register the gate application on each attention's *current* o_proj.
+
+    Needed after something replaces o_proj (e.g. PTQ wrappers such as CAT-Q's CATQLinear, or baking a quantized
+    nn.Linear): the hook lives on the module object, so a replacement silently drops the gate. Returns the number
+    of attentions whose hook was moved.
+    """
+    moved = 0
+    for attn in (m for m in model.modules() if isinstance(getattr(m, "out_gate", None), AttnOutputGate)):
+        if getattr(attn, "_gate_apply_target", None) is attn.o_proj:
+            continue
+        attn._gate_apply_handle.remove()
+        _register_gate_apply(attn)
+        moved += 1
+    return moved
 
 
 def apply_retrofit(model: PreTrainedModel, cfg: RetrofitConfig) -> list[str]:

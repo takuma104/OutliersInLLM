@@ -27,6 +27,19 @@ def c4_validation_texts() -> list[str]:
     return list(ds["text"])
 
 
+def c4_validation_windows(tokenizer: PreTrainedTokenizerBase, num_docs: int = 8, seq_len: int = 1024) -> torch.Tensor:
+    """CAT-Q-Reproduction's C4-validation PPL protocol (scripts/run_ppl.py): the first ``num_docs`` validation
+    documents (in file order) with at least ``seq_len`` tokens, truncated to ``seq_len``."""
+    rows: list[list[int]] = []
+    for text in c4_validation_texts():
+        ids = tokenizer(text).input_ids
+        if len(ids) >= seq_len:
+            rows.append(ids[:seq_len])
+            if len(rows) == num_docs:
+                break
+    return torch.tensor(rows, dtype=torch.long)
+
+
 def wikitext2_test_text() -> str:
     ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
     return "\n\n".join(ds["text"])

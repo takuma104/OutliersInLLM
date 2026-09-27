@@ -20,6 +20,7 @@ from torch import nn
 from outliers.data import (
     build_probe_set,
     c4_validation_texts,
+    c4_validation_windows,
     chunk_tokens,
     load_probe_doc_indices,
     token_byte_lengths,
@@ -107,6 +108,9 @@ def main() -> None:
     ap.add_argument("--attention", action="store_true", help="M7 attention-sink probe (eager attention, 32 docs)")
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument("--data", type=Path, default=Path("results/data/fineweb_edu"))
+    ap.add_argument("--data-model", default=None, help="held-out stream to use (default: the base model's)")
+    ap.add_argument("--rtn-schemes", nargs="+", default=RTN_SCHEMES)
+    ap.add_argument("--no-rtn-per-kind", action="store_true")
     args = ap.parse_args()
 
     t0 = time.perf_counter()
@@ -132,10 +136,13 @@ def main() -> None:
     bl = token_byte_lengths(tok)
     wt = chunk_tokens(wikitext2_test_text(), tok, 2048)
     probe = build_probe_set(tok, c4_validation_texts(), load_probe_doc_indices()[: args.probe_docs], 2048)
-    held = torch.from_numpy(np.load(args.data / base / "heldout.npy", mmap_mode="r")[: args.heldout_seqs * 2048]
+    held = torch.from_numpy(np.load(args.data / (args.data_model or base) / "heldout.npy", mmap_mode="r")[: args.heldout_seqs * 2048]
                             .astype(np.int64)).view(-1, 2048)
     lm = {"wikitext2": evaluate_lm(model, wt, bl, args.lm_batch),
-          "c4_probe": evaluate_lm(model, probe.input_ids, bl, args.lm_batch)}
+          "c4_probe": evaluate_lm(model, probe.input_ids, bl, args.lm_batch),
+          # CAT-Q-Reproduction protocol (8 docs) and a steadier 64-doc variant
+          "c4val8": evaluate_lm(model, c4_validation_windows(tok, 8), bl, args.lm_batch),
+          "c4val64": evaluate_lm(model, c4_validation_windows(tok, 64), bl, args.lm_batch)}
     for k, v in lm.items():
         summary |= {f"{k}/ppl": v["ppl"], f"{k}/bpb": v["bpb"]}
     summary["heldout/kl"] = heldout_kl(model, teacher, held)
@@ -193,11 +200,11 @@ def main() -> None:
     base_ppl = lm["wikitext2"]["ppl"]
     rtn_rows = []
     kinds = sorted({li.kind for li in iter_linears(model)} - NON_QUANT_KINDS)
-    for scheme in RTN_SCHEMES:
+    for scheme in args.rtn_schemes:
         with fake_quantize(model, SCHEMES[scheme]):
             ppl = evaluate_lm(model, wt, bl, args.lm_batch)["ppl"]
         rtn_rows.append({"scheme": scheme, "kind": "all", "ppl": ppl})
-    for kind in kinds:
+    for kind in [] if args.no_rtn_per_kind else kinds:
         with fake_quantize(model, SCHEMES["A4-INT"], kinds=[kind]):
             rtn_rows.append({"scheme": "A4-INT", "kind": kind, "ppl": evaluate_lm(model, wt, bl, args.lm_batch)["ppl"]})
     rtn = pd.DataFrame(rtn_rows).assign(dppl_rel=lambda d: d.ppl / base_ppl - 1)
