@@ -1,6 +1,6 @@
 # Phase 2 実施計画（案 C）: Qwen3.5 縮小版 Track A → Qwen3-0.6B に GA＋GatedNorm 後付け
 
-- 作成: 2026-09-23 / 状態: **承認済み（案 C、2026-09-23）**
+- 作成: 2026-09-23 / 状態: **完了（2026-09-27）。結果は [Phase 2 最終レポート](../reports/phase2-final.md)**
 - 元計画: [20260923-gatednorm-retrofit-plan.md](./20260923-gatednorm-retrofit-plan.md) §5
 - 根拠: [Phase 1 レポート](../reports/phase1-outliers.md) §4
 
